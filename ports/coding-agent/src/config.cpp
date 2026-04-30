@@ -1,11 +1,18 @@
 #include "config.hpp"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 namespace coding_agent {
 namespace {
+
+using nlohmann::json;
 
 std::string get_env_or_default(const char* key, const std::string& fallback) {
   const char* value = std::getenv(key);
@@ -30,6 +37,39 @@ bool parse_float_arg(const std::string& raw, float& out) {
   }
 }
 
+std::optional<json> load_settings_json() {
+  const char* home = std::getenv("HOME");
+  if (home == nullptr) {
+    return std::nullopt;
+  }
+
+  const std::filesystem::path path =
+      std::filesystem::path(home) / ".config" / "coding-agent" / "settings.json";
+  if (!std::filesystem::exists(path)) {
+    return std::nullopt;
+  }
+
+  std::ifstream input(path);
+  if (!input.is_open()) {
+    return std::nullopt;
+  }
+
+  try {
+    json parsed;
+    input >> parsed;
+    return parsed;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+template <typename T>
+void load_optional(const json& source, const char* key, T& out) {
+  if (source.contains(key)) {
+    out = source.at(key).get<T>();
+  }
+}
+
 }  // namespace
 
 void print_usage() {
@@ -47,8 +87,17 @@ void print_usage() {
       << "                            (default: from CODING_AGENT_MODEL or empty)\n"
       << "  --api-key <key>           Optional bearer token for llama.cpp server\n"
       << "                            (default: from CODING_AGENT_API_KEY or empty)\n"
-      << "  --n-predict <int>         Maximum generated tokens (default: 512)\n"
+      << "  --cwd <dir>               Working directory for tool execution\n"
+      << "  --system-prompt <file>    Replace default system prompt with file content\n"
+      << "  --append-system-prompt    Add extra system prompt text (repeatable)\n"
+      << "  --session <id>            Resume specific session id\n"
+      << "  --new-session             Force new session\n"
+      << "  --context-size <int>      Context window used for compaction checks\n"
+      << "  --max-tokens <int>        Maximum generated tokens (default: 512)\n"
       << "  --temperature <float>     Sampling temperature (default: 0.2)\n"
+      << "  --print                   Force one-shot print mode\n"
+      << "  --no-tools                Disable tool calling\n"
+      << "  --no-context-files        Do not load AGENTS.md/CLAUDE.md\n"
       << "  --no-stream               Disable streaming mode\n"
       << "  --prompt <text>           Prompt text to send\n"
       << "  --help                    Show this help\n"
@@ -57,21 +106,52 @@ void print_usage() {
       << "  CODING_AGENT_PROVIDER\n"
       << "  CODING_AGENT_BASE_URL\n"
       << "  CODING_AGENT_MODEL\n"
-      << "  CODING_AGENT_API_KEY\n";
+      << "  CODING_AGENT_API_KEY\n"
+      << "Settings file:\n"
+      << "  ~/.config/coding-agent/settings.json\n";
 }
 
 std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
   Config config{
-      .provider = get_env_or_default("CODING_AGENT_PROVIDER", "llama-cpp"),
-      .base_url = get_env_or_default("CODING_AGENT_BASE_URL", "http://127.0.0.1:8080"),
-      .model = get_env_or_default("CODING_AGENT_MODEL", ""),
-      .api_key = get_env_or_default("CODING_AGENT_API_KEY", ""),
-      .n_predict = 512,
+      .provider = "llama-cpp",
+      .base_url = "http://127.0.0.1:8080",
+      .model = "",
+      .api_key = "",
+      .cwd = std::filesystem::current_path().string(),
+      .system_prompt_path = std::nullopt,
+      .append_system_prompts = {},
+      .session_id = std::nullopt,
+      .prompt = std::nullopt,
+      .max_tokens = 512,
+      .context_size = 8192,
       .temperature = 0.2f,
+      .print_mode = false,
       .stream = true,
+      .no_tools = false,
+      .no_context_files = false,
+      .new_session = false,
   };
 
-  bool has_prompt = false;
+  if (const auto settings = load_settings_json(); settings.has_value()) {
+    load_optional(settings.value(), "base_url", config.base_url);
+    load_optional(settings.value(), "model", config.model);
+    load_optional(settings.value(), "api_key", config.api_key);
+    load_optional(settings.value(), "temperature", config.temperature);
+    load_optional(settings.value(), "max_tokens", config.max_tokens);
+    load_optional(settings.value(), "context_size", config.context_size);
+  }
+
+  config.provider = get_env_or_default("CODING_AGENT_PROVIDER", config.provider);
+  config.base_url = get_env_or_default("CODING_AGENT_BASE_URL", config.base_url);
+  config.model = get_env_or_default("CODING_AGENT_MODEL", config.model);
+  config.api_key = get_env_or_default("CODING_AGENT_API_KEY", config.api_key);
+
+  if (config.provider.empty()) {
+    config.provider = "llama-cpp";
+  }
+  if (config.base_url.empty()) {
+    config.base_url = "http://127.0.0.1:8080";
+  }
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -96,9 +176,36 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       config.api_key = argv[++i];
       continue;
     }
-    if (arg == "--n-predict" && i + 1 < argc) {
-      if (!parse_int_arg(argv[++i], config.n_predict)) {
-        error = "Invalid value for --n-predict";
+    if (arg == "--cwd" && i + 1 < argc) {
+      config.cwd = argv[++i];
+      continue;
+    }
+    if (arg == "--system-prompt" && i + 1 < argc) {
+      config.system_prompt_path = std::string(argv[++i]);
+      continue;
+    }
+    if (arg == "--append-system-prompt" && i + 1 < argc) {
+      config.append_system_prompts.push_back(argv[++i]);
+      continue;
+    }
+    if (arg == "--session" && i + 1 < argc) {
+      config.session_id = std::string(argv[++i]);
+      continue;
+    }
+    if (arg == "--new-session") {
+      config.new_session = true;
+      continue;
+    }
+    if (arg == "--context-size" && i + 1 < argc) {
+      if (!parse_int_arg(argv[++i], config.context_size)) {
+        error = "Invalid value for --context-size";
+        return std::nullopt;
+      }
+      continue;
+    }
+    if ((arg == "--max-tokens" || arg == "--n-predict") && i + 1 < argc) {
+      if (!parse_int_arg(argv[++i], config.max_tokens)) {
+        error = "Invalid value for --max-tokens";
         return std::nullopt;
       }
       continue;
@@ -114,9 +221,20 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       config.stream = false;
       continue;
     }
+    if (arg == "--print") {
+      config.print_mode = true;
+      continue;
+    }
+    if (arg == "--no-tools") {
+      config.no_tools = true;
+      continue;
+    }
+    if (arg == "--no-context-files") {
+      config.no_context_files = true;
+      continue;
+    }
     if (arg == "--prompt" && i + 1 < argc) {
-      has_prompt = true;
-      ++i;
+      config.prompt = std::string(argv[++i]);
       continue;
     }
 
@@ -124,11 +242,6 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       error = "Unknown or incomplete argument: " + arg;
       return std::nullopt;
     }
-  }
-
-  if (!has_prompt) {
-    error = "Missing required argument: --prompt";
-    return std::nullopt;
   }
 
   return config;

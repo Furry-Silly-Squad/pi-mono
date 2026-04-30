@@ -1,16 +1,43 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace coding_agent {
 
-struct GenerationRequest {
-  std::string prompt;
+struct ToolCall {
+  std::string id;
+  std::string name;
+  std::string arguments_json;
+};
+
+struct ChatMessage {
+  std::string role;
+  std::string content;
+  std::optional<std::string> tool_call_id;
+  std::vector<ToolCall> tool_calls;
+};
+
+struct ToolDefinition {
+  std::string name;
+  std::string description;
+  std::string parameters_schema_json;
+};
+
+struct ChatRequest {
+  std::vector<ChatMessage> messages;
+  std::vector<ToolDefinition> tools;
   std::string model;
-  int n_predict;
+  int max_tokens;
   float temperature;
   bool stream;
+};
+
+struct ChatResponse {
+  std::string content;
+  std::vector<ToolCall> tool_calls;
 };
 
 using ChunkCallback = std::function<void(const std::string&)>;
@@ -18,8 +45,9 @@ using ChunkCallback = std::function<void(const std::string&)>;
 class Provider {
  public:
   virtual ~Provider() = default;
-  virtual bool generate(
-      const GenerationRequest& request,
+  virtual bool chat(
+      const ChatRequest& request,
+      ChatResponse& response,
       const ChunkCallback& on_chunk,
       std::string& error
   ) = 0;

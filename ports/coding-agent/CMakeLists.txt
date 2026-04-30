@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(coding_agent_port VERSION 0.1.0 LANGUAGES CXX)
 
+include(FetchContent)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -15,17 +17,23 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 find_package(CURL REQUIRED)
+find_package(Readline REQUIRED)
 
-add_executable(coding-agent
-  src/main.cpp
-  src/agent.cpp
-  src/config.cpp
-  src/providers/llama_cpp_provider.cpp
+FetchContent_Declare(
+  nlohmann_json
+  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
 )
+FetchContent_MakeAvailable(nlohmann_json)
+
+file(GLOB_RECURSE CODING_AGENT_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+)
+
+add_executable(coding-agent ${CODING_AGENT_SOURCES})
 
 target_include_directories(coding-agent
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
-target_link_libraries(coding-agent PRIVATE CURL::libcurl)
+target_link_libraries(coding-agent PRIVATE CURL::libcurl Readline::Readline nlohmann_json::nlohmann_json)

@@ -6,8 +6,10 @@ Scope for v0:
 
 - Linux + macOS CLI build
 - Only `llama-cpp` provider
-- Single prompt-in / single response-out flow
-- No tools, no session persistence, no TUI/RPC modes
+- Tool-calling agent loop (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`)
+- Print mode and readline interactive mode
+- Linear JSONL session persistence with auto-resume
+- Context compaction when token budget grows too large
 
 ## Build
 
@@ -43,8 +45,15 @@ Optional flags:
 
 - `--model <id>`
 - `--api-key <key>`
-- `--n-predict <int>`
+- `--max-tokens <int>` (`--n-predict` alias)
 - `--temperature <float>`
+- `--session <id>`
+- `--new-session`
+- `--print`
+- `--no-tools`
+- `--no-context-files`
+- `--context-size <int>`
+- `--cwd <dir>`
 - `--no-stream`
 
 Environment variables:
@@ -54,7 +63,12 @@ Environment variables:
 - `CODING_AGENT_MODEL` (default empty)
 - `CODING_AGENT_API_KEY` (default empty)
 
+Settings file (optional):
+
+- `~/.config/coding-agent/settings.json`
+- Supported fields: `base_url`, `model`, `api_key`, `temperature`, `max_tokens`, `context_size`
+
 ## Notes
 
-- The current HTTP integration targets OpenAI-compatible `POST /v1/chat/completions`.
-- Streaming mode parses Server-Sent Events (`data: ...`) and prints token deltas as they arrive.
+- Provider integration targets OpenAI-compatible `POST /v1/chat/completions`.
+- Tool-call chunks are parsed from both non-stream and SSE stream responses.

@@ -9,8 +9,9 @@ namespace coding_agent {
 class LlamaCppProvider final : public Provider {
  public:
   explicit LlamaCppProvider(std::string base_url, std::string api_key);
-  bool generate(
-      const GenerationRequest& request,
+  bool chat(
+      const ChatRequest& request,
+      ChatResponse& response,
       const ChunkCallback& on_chunk,
       std::string& error
   ) override;

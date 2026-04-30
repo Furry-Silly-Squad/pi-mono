@@ -1,24 +1,39 @@
 #include "agent.hpp"
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <vector>
 
-#include "config.hpp"
+#include <unistd.h>
+
+#include "context_loader.hpp"
+#include "modes/interactive_mode.hpp"
+#include "modes/print_mode.hpp"
 #include "providers/llama_cpp_provider.hpp"
-#include "providers/provider.hpp"
+#include "session.hpp"
+#include "system_prompt.hpp"
+#include "tools/tool_registry.hpp"
+#include "config.hpp"
 
 namespace coding_agent {
 namespace {
 
-std::string extract_prompt(int argc, char** argv) {
-  for (int i = 1; i < argc; ++i) {
-    const std::string arg = argv[i];
-    if (arg == "--prompt" && i + 1 < argc) {
-      return argv[i + 1];
-    }
+std::string read_file(const std::string& path) {
+  std::ifstream input(path);
+  std::stringstream buffer;
+  buffer << input.rdbuf();
+  return buffer.str();
+}
+
+bool should_run_print_mode(const Config& config) {
+  if (config.print_mode || config.prompt.has_value()) {
+    return true;
   }
-  return "";
+  return !isatty(STDIN_FILENO);
 }
 
 }  // namespace
@@ -41,36 +56,54 @@ int run_agent(int argc, char** argv) {
     return 1;
   }
 
-  const std::string prompt = extract_prompt(argc, argv);
-  if (prompt.empty()) {
-    std::cerr << "Error: prompt is empty.\n";
+  if (!std::filesystem::exists(config->cwd) || !std::filesystem::is_directory(config->cwd)) {
+    std::cerr << "Error: cwd is not a valid directory: " << config->cwd << "\n";
     return 1;
   }
 
-  std::unique_ptr<Provider> provider =
-      std::make_unique<LlamaCppProvider>(config->base_url, config->api_key);
-  GenerationRequest request{
-      .prompt = prompt,
-      .model = config->model,
-      .n_predict = config->n_predict,
-      .temperature = config->temperature,
-      .stream = config->stream,
-  };
+  std::filesystem::current_path(config->cwd);
 
-  std::string generation_error;
-  const bool ok = provider->generate(
-      request,
-      [](const std::string& chunk) { std::cout << chunk << std::flush; },
-      generation_error
-  );
-
-  if (!ok) {
-    std::cerr << "\nError: " << generation_error << "\n";
-    return 1;
+  LlamaCppProvider provider(config->base_url, config->api_key);
+  ToolRegistry tools;
+  if (!config->no_tools) {
+    register_builtin_tools(tools);
   }
 
-  std::cout << "\n";
-  return 0;
+  SessionStore session(config->cwd);
+  session.start_or_resume(config->session_id, config->new_session);
+
+  std::string load_error;
+  std::vector<ChatMessage> history = session.load_messages(load_error);
+
+  if (history.empty() || history.front().role != "system") {
+    std::vector<ContextFile> context_files;
+    if (!config->no_context_files) {
+      context_files = load_context_files(config->cwd);
+    }
+    std::string system_prompt = build_system_prompt(
+        config->cwd,
+        config->no_tools ? std::vector<ToolDefinition>{} : tools.build_tool_definitions(),
+        context_files,
+        config->append_system_prompts
+    );
+    if (config->system_prompt_path.has_value()) {
+      system_prompt = read_file(config->system_prompt_path.value());
+    }
+    ChatMessage system{
+        .role = "system",
+        .content = system_prompt,
+        .tool_call_id = std::nullopt,
+        .tool_calls = {},
+    };
+    history.insert(history.begin(), system);
+    std::string persist_error;
+    session.append(system, persist_error);
+  }
+
+  if (should_run_print_mode(config.value())) {
+    return run_print_mode(config.value(), provider, tools, history, session);
+  }
+  return run_interactive_mode(config.value(), provider, tools, history, session);
 }
 
 }  // namespace coding_agent

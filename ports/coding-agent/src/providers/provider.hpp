@@ -18,6 +18,7 @@ struct ChatMessage {
   std::string content;
   std::optional<std::string> tool_call_id;
   std::vector<ToolCall> tool_calls;
+  std::optional<std::string> entry_id;
 };
 
 struct ToolDefinition {

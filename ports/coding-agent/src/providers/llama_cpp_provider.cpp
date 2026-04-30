@@ -45,6 +45,11 @@ struct StreamState {
   std::string error;
 };
 
+bool is_valid_json_value(const std::string& raw) {
+  const json parsed = json::parse(raw, nullptr, false);
+  return !parsed.is_discarded();
+}
+
 size_t write_non_stream_callback(void* contents, size_t size, size_t nmemb, void* userp) {
   const size_t total_size = size * nmemb;
   auto* buffer = static_cast<std::string*>(userp);
@@ -52,10 +57,10 @@ size_t write_non_stream_callback(void* contents, size_t size, size_t nmemb, void
   return total_size;
 }
 
-std::vector<ToolCall> parse_tool_calls(const json& tool_calls_json) {
-  std::vector<ToolCall> out;
+bool parse_tool_calls(const json& tool_calls_json, std::vector<ToolCall>& out, std::string& error) {
+  out.clear();
   if (!tool_calls_json.is_array()) {
-    return out;
+    return true;
   }
   for (const auto& item : tool_calls_json) {
     ToolCall call;
@@ -72,10 +77,14 @@ std::vector<ToolCall> parse_tool_calls(const json& tool_calls_json) {
       }
     }
     if (!call.name.empty()) {
+      if (call.arguments_json.empty() || !is_valid_json_value(call.arguments_json)) {
+        error = "Invalid tool call arguments JSON for tool '" + call.name + "'";
+        return false;
+      }
       out.push_back(std::move(call));
     }
   }
-  return out;
+  return true;
 }
 
 void merge_stream_tool_calls(
@@ -175,6 +184,10 @@ json to_json_message(const ChatMessage& message) {
   if (!message.tool_calls.empty()) {
     m["tool_calls"] = json::array();
     for (const auto& call : message.tool_calls) {
+      // Guard against malformed historical tool call args causing provider 500s.
+      if (call.arguments_json.empty() || !is_valid_json_value(call.arguments_json)) {
+        continue;
+      }
       m["tool_calls"].push_back(
           json{
               {"id", call.id},
@@ -292,6 +305,15 @@ bool LlamaCppProvider::chat(
       error = "stream parsing error: " + stream_state.error;
       return false;
     }
+    for (const auto& call : response.tool_calls) {
+      if (call.name.empty()) {
+        continue;
+      }
+      if (call.arguments_json.empty() || !is_valid_json_value(call.arguments_json)) {
+        error = "Invalid streamed tool call arguments JSON for tool '" + call.name + "'";
+        return false;
+      }
+    }
     return true;
   }
 
@@ -305,7 +327,11 @@ bool LlamaCppProvider::chat(
     const auto& message = parsed.at("choices")[0].at("message");
     response.content = message.value("content", "");
     if (message.contains("tool_calls")) {
-      response.tool_calls = parse_tool_calls(message.at("tool_calls"));
+      std::vector<ToolCall> parsed_tool_calls;
+      if (!parse_tool_calls(message.at("tool_calls"), parsed_tool_calls, error)) {
+        return false;
+      }
+      response.tool_calls = std::move(parsed_tool_calls);
     }
   } catch (const std::exception& ex) {
     error = std::string("Unable to parse llama.cpp response: ") + ex.what();

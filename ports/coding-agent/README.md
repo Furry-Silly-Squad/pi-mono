@@ -74,6 +74,8 @@ Optional flags:
 - `--no-tools`
 - `--no-context-files`
 - `--context-size <int>`
+- `--compaction-reserve-tokens <int>` (default `16384`)
+- `--compaction-keep-recent-tokens <int>` (default `20000`)
 - `--cwd <dir>`
 - `--no-stream`
 
@@ -87,7 +89,7 @@ Environment variables:
 Settings file (optional):
 
 - `~/.config/coding-agent/settings.json`
-- Supported fields: `base_url`, `model`, `api_key`, `temperature`, `max_tokens`, `context_size`
+- Supported fields: `base_url`, `model`, `api_key`, `temperature`, `max_tokens`, `context_size`, `compaction_reserve_tokens`, `compaction_keep_recent_tokens`
 
 ## Notes
 
@@ -95,3 +97,31 @@ Settings file (optional):
 - Tool-call chunks are parsed from both non-stream and SSE stream responses.
 - `nlohmann/json` is fetched automatically during CMake configure via `FetchContent`.
 - The `bash` tool prompts for confirmation before running commands that look destructive (for example `rm`, `git reset --hard`, or `git clean -fd`).
+- Compaction triggers when estimated context tokens are above `context_size - compaction_reserve_tokens`.
+- Compaction keeps a recent tail (`compaction_keep_recent_tokens`) and summarizes only older history.
+- Compaction failures are surfaced as runtime errors (not silently ignored).
+- Interactive/print output includes compaction events like `[compaction] 12345 -> 6789 tokens`.
+- Starting with `--new-session` stores a compact branch handoff summary from the latest prior session.
+
+## Session JSONL rows
+
+Session logs are stored under `~/.config/coding-agent/sessions/*.jsonl`.
+
+In addition to `session` and `message` rows, the port now persists:
+
+- `compaction` rows:
+  - `tokens_before`
+  - `tokens_after`
+  - `first_kept_index`
+  - `summary`
+- `branch_summary` rows:
+  - `source_session_id`
+  - `summary`
+
+On resume, these rows are reloaded as synthetic assistant context messages.
+
+## Troubleshooting
+
+- If compaction fails, check provider connectivity/model health first; the run now exits with `Compaction failed: ...`.
+- If compaction triggers too early, raise `--context-size` or lower `--compaction-reserve-tokens`.
+- If too much history is summarized away, increase `--compaction-keep-recent-tokens`.

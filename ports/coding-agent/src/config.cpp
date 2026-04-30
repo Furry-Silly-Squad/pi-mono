@@ -93,6 +93,10 @@ void print_usage() {
       << "  --session <id>            Resume specific session id\n"
       << "  --new-session             Force new session\n"
       << "  --context-size <int>      Context window used for compaction checks\n"
+      << "  --compaction-reserve-tokens <int>\n"
+      << "                            Tokens reserved before context limit (default: 16384)\n"
+      << "  --compaction-keep-recent-tokens <int>\n"
+      << "                            Approx recent tokens to keep verbatim (default: 20000)\n"
       << "  --max-tokens <int>        Maximum generated tokens (default: 512)\n"
       << "  --temperature <float>     Sampling temperature (default: 0.2)\n"
       << "  --print                   Force one-shot print mode\n"
@@ -124,6 +128,8 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .prompt = std::nullopt,
       .max_tokens = 512,
       .context_size = 8192,
+      .compaction_reserve_tokens = 16384,
+      .compaction_keep_recent_tokens = 20000,
       .temperature = 0.2f,
       .print_mode = false,
       .stream = true,
@@ -139,6 +145,8 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     load_optional(settings.value(), "temperature", config.temperature);
     load_optional(settings.value(), "max_tokens", config.max_tokens);
     load_optional(settings.value(), "context_size", config.context_size);
+    load_optional(settings.value(), "compaction_reserve_tokens", config.compaction_reserve_tokens);
+    load_optional(settings.value(), "compaction_keep_recent_tokens", config.compaction_keep_recent_tokens);
   }
 
   config.provider = get_env_or_default("CODING_AGENT_PROVIDER", config.provider);
@@ -203,6 +211,20 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       }
       continue;
     }
+    if (arg == "--compaction-reserve-tokens" && i + 1 < argc) {
+      if (!parse_int_arg(argv[++i], config.compaction_reserve_tokens)) {
+        error = "Invalid value for --compaction-reserve-tokens";
+        return std::nullopt;
+      }
+      continue;
+    }
+    if (arg == "--compaction-keep-recent-tokens" && i + 1 < argc) {
+      if (!parse_int_arg(argv[++i], config.compaction_keep_recent_tokens)) {
+        error = "Invalid value for --compaction-keep-recent-tokens";
+        return std::nullopt;
+      }
+      continue;
+    }
     if ((arg == "--max-tokens" || arg == "--n-predict") && i + 1 < argc) {
       if (!parse_int_arg(argv[++i], config.max_tokens)) {
         error = "Invalid value for --max-tokens";
@@ -242,6 +264,15 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       error = "Unknown or incomplete argument: " + arg;
       return std::nullopt;
     }
+  }
+
+  if (config.compaction_reserve_tokens < 0) {
+    error = "--compaction-reserve-tokens must be >= 0";
+    return std::nullopt;
+  }
+  if (config.compaction_keep_recent_tokens <= 0) {
+    error = "--compaction-keep-recent-tokens must be > 0";
+    return std::nullopt;
   }
 
   return config;

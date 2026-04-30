@@ -48,8 +48,40 @@ RunResult run_agent_loop(
     history.push_back(assistant);
     session.append(assistant, persist_error);
 
-    if (should_compact(total_context_tokens(history), config.context_size)) {
-      compact_history(history, provider, config.model, error);
+    CompactionStats compaction_stats;
+    if (should_compact(
+            total_context_tokens(history),
+            config.context_size,
+            config.compaction_reserve_tokens
+        )) {
+      if (!compact_history(
+              history,
+              provider,
+              config.model,
+              config.compaction_keep_recent_tokens,
+              config.compaction_reserve_tokens,
+              &compaction_stats,
+              error
+          )) {
+        return {.ok = false, .output = "", .error = "Compaction failed: " + error};
+      }
+
+      if (compaction_stats.did_compact) {
+        std::ostringstream status;
+        status << "\n[compaction] " << compaction_stats.tokens_before << " -> " << compaction_stats.tokens_after
+               << " tokens\n";
+        on_chunk(status.str());
+        std::string persist_error_ignored;
+        session.append_compaction(
+            CompactionEvent{
+                .tokens_before = compaction_stats.tokens_before,
+                .tokens_after = compaction_stats.tokens_after,
+                .first_kept_index = compaction_stats.first_kept_index,
+                .summary = compaction_stats.summary,
+            },
+            persist_error_ignored
+        );
+      }
     }
 
     if (response.tool_calls.empty()) {

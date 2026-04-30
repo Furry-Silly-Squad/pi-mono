@@ -1,11 +1,14 @@
 #include "session.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 
 #include <nlohmann/json.hpp>
+
+#include "branch_summary.hpp"
 
 namespace coding_agent {
 namespace {
@@ -26,6 +29,21 @@ std::string now_id() {
   return std::to_string(ms.time_since_epoch().count());
 }
 
+std::optional<std::filesystem::path> latest_session_path(const std::string& session_dir) {
+  std::filesystem::file_time_type newest_time;
+  std::optional<std::filesystem::path> latest;
+  for (const auto& entry : std::filesystem::directory_iterator(session_dir)) {
+    if (!entry.is_regular_file() || entry.path().extension() != ".jsonl") {
+      continue;
+    }
+    if (!latest.has_value() || entry.last_write_time() > newest_time) {
+      newest_time = entry.last_write_time();
+      latest = entry.path();
+    }
+  }
+  return latest;
+}
+
 }  // namespace
 
 SessionStore::SessionStore(std::string cwd) : session_dir_(default_session_dir()), session_id_(), session_path_() {
@@ -34,6 +52,11 @@ SessionStore::SessionStore(std::string cwd) : session_dir_(default_session_dir()
 }
 
 std::string SessionStore::start_or_resume(const std::optional<std::string>& requested_id, bool force_new) {
+  std::optional<std::filesystem::path> previous_latest;
+  if (force_new) {
+    previous_latest = latest_session_path(session_dir_);
+  }
+
   if (requested_id.has_value()) {
     session_id_ = requested_id.value();
   } else if (force_new) {
@@ -60,6 +83,15 @@ std::string SessionStore::start_or_resume(const std::optional<std::string>& requ
   if (!std::filesystem::exists(session_path_)) {
     std::ofstream output(session_path_, std::ios::app);
     output << json({{"type", "session"}, {"id", session_id_}}).dump() << "\n";
+  }
+
+  if (force_new && previous_latest.has_value() && previous_latest.value().string() != session_path_) {
+    const BranchSummaryEvent event{
+        .summary = summarize_branch_session_file(previous_latest.value()),
+        .source_session_id = previous_latest.value().stem().string(),
+    };
+    std::string append_error;
+    append_branch_summary(event, append_error);
   }
   return session_id_;
 }
@@ -91,6 +123,40 @@ bool SessionStore::append(const ChatMessage& message, std::string& error) {
   }
 }
 
+bool SessionStore::append_compaction(const CompactionEvent& event, std::string& error) {
+  try {
+    std::ofstream output(session_path_, std::ios::app);
+    json row{
+        {"type", "compaction"},
+        {"tokens_before", event.tokens_before},
+        {"tokens_after", event.tokens_after},
+        {"first_kept_index", event.first_kept_index},
+        {"summary", event.summary},
+    };
+    output << row.dump() << "\n";
+    return true;
+  } catch (const std::exception& ex) {
+    error = ex.what();
+    return false;
+  }
+}
+
+bool SessionStore::append_branch_summary(const BranchSummaryEvent& event, std::string& error) {
+  try {
+    std::ofstream output(session_path_, std::ios::app);
+    json row{
+        {"type", "branch_summary"},
+        {"summary", event.summary},
+        {"source_session_id", event.source_session_id},
+    };
+    output << row.dump() << "\n";
+    return true;
+  } catch (const std::exception& ex) {
+    error = ex.what();
+    return false;
+  }
+}
+
 std::vector<ChatMessage> SessionStore::load_messages(std::string& error) const {
   std::vector<ChatMessage> out;
   try {
@@ -102,6 +168,27 @@ std::vector<ChatMessage> SessionStore::load_messages(std::string& error) const {
       }
       const auto row = json::parse(line);
       if (row.value("type", "") != "message") {
+        if (row.value("type", "") == "compaction") {
+          const std::string summary = row.value("summary", "");
+          const int tokens_before = row.value("tokens_before", 0);
+          ChatMessage message{
+              .role = "assistant",
+              .content = "Compaction summary (tokens before: " + std::to_string(tokens_before) + "):\n" + summary,
+              .tool_call_id = std::nullopt,
+              .tool_calls = {},
+          };
+          out.push_back(std::move(message));
+        } else if (row.value("type", "") == "branch_summary") {
+          const std::string summary = row.value("summary", "");
+          const std::string source = row.value("source_session_id", "");
+          ChatMessage message{
+              .role = "assistant",
+              .content = "Branch handoff from session " + source + ":\n" + summary,
+              .tool_call_id = std::nullopt,
+              .tool_calls = {},
+          };
+          out.push_back(std::move(message));
+        }
         continue;
       }
       ChatMessage message{

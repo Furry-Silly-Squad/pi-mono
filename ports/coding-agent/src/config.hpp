@@ -18,6 +18,8 @@ struct Config {
   std::optional<std::string> prompt;
   int max_tokens;
   int context_size;
+  int compaction_reserve_tokens;
+  int compaction_keep_recent_tokens;
   float temperature;
   bool print_mode;
   bool stream;

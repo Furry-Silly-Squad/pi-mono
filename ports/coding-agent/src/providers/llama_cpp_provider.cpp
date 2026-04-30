@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -43,6 +44,7 @@ struct StreamState {
   ChatResponse* response;
   ChunkCallback on_chunk;
   std::string error;
+  std::vector<size_t> tool_call_fragment_counts;
 };
 
 bool is_valid_json_value(const std::string& raw) {
@@ -88,6 +90,7 @@ bool parse_tool_calls(const json& tool_calls_json, std::vector<ToolCall>& out, s
 }
 
 void merge_stream_tool_calls(
+    StreamState* state,
     std::vector<ToolCall>& aggregate,
     const json& stream_tool_calls
 ) {
@@ -100,6 +103,9 @@ void merge_stream_tool_calls(
     while (aggregate.size() <= index) {
       aggregate.push_back(ToolCall{});
     }
+    while (state != nullptr && state->tool_call_fragment_counts.size() <= index) {
+      state->tool_call_fragment_counts.push_back(0U);
+    }
     ToolCall& call = aggregate[index];
     if (piece.contains("id") && piece.at("id").is_string()) {
       call.id = piece.at("id").get<std::string>();
@@ -107,10 +113,20 @@ void merge_stream_tool_calls(
     if (piece.contains("function")) {
       const auto& fn = piece.at("function");
       if (fn.contains("name") && fn.at("name").is_string()) {
-        call.name += fn.at("name").get<std::string>();
+        const std::string name_fragment = fn.at("name").get<std::string>();
+        call.name += name_fragment;
+        std::cerr << "[debug][tool-stream] index=" << index << " id=" << call.id
+                  << " name_fragment=" << name_fragment << "\n";
       }
       if (fn.contains("arguments") && fn.at("arguments").is_string()) {
-        call.arguments_json += fn.at("arguments").get<std::string>();
+        const std::string arguments_fragment = fn.at("arguments").get<std::string>();
+        call.arguments_json += arguments_fragment;
+        if (state != nullptr) {
+          ++state->tool_call_fragment_counts[index];
+        }
+        std::cerr << "[debug][tool-stream] index=" << index << " id=" << call.id
+                  << " arguments_fragment_size=" << arguments_fragment.size()
+                  << " total_arguments_size=" << call.arguments_json.size() << "\n";
       }
     }
   }
@@ -160,7 +176,7 @@ size_t write_stream_callback(void* contents, size_t size, size_t nmemb, void* us
           state->on_chunk(chunk);
         }
         if (delta.contains("tool_calls")) {
-          merge_stream_tool_calls(state->response->tool_calls, delta.at("tool_calls"));
+          merge_stream_tool_calls(state, state->response->tool_calls, delta.at("tool_calls"));
         }
       }
     } catch (const std::exception& ex) {
@@ -310,6 +326,26 @@ bool LlamaCppProvider::chat(
         continue;
       }
       if (call.arguments_json.empty() || !is_valid_json_value(call.arguments_json)) {
+        const size_t total_size = call.arguments_json.size();
+        const size_t tail_size = std::min<size_t>(300, total_size);
+        const size_t tail_start = total_size > tail_size ? total_size - tail_size : 0;
+        std::string tail = call.arguments_json.substr(tail_start);
+        size_t index = 0;
+        for (; index < response.tool_calls.size(); ++index) {
+          if (response.tool_calls[index].id == call.id) {
+            break;
+          }
+        }
+        size_t fragments = 0;
+        if (index < stream_state.tool_call_fragment_counts.size()) {
+          fragments = stream_state.tool_call_fragment_counts[index];
+        }
+        std::cerr << "[debug][tool-stream-invalid] id=" << call.id << " name=" << call.name
+                  << " index=" << index << " fragment_count=" << fragments
+                  << " arguments_size=" << total_size << "\n";
+        std::cerr << "[debug][tool-stream-invalid] full_arguments_json:\n"
+                  << call.arguments_json << "\n";
+        std::cerr << "[debug][tool-stream-invalid] tail_300:\n" << tail << "\n";
         error = "Invalid streamed tool call arguments JSON for tool '" + call.name + "'";
         return false;
       }

@@ -94,3 +94,4 @@ Settings file (optional):
 - Provider integration targets OpenAI-compatible `POST /v1/chat/completions`.
 - Tool-call chunks are parsed from both non-stream and SSE stream responses.
 - `nlohmann/json` is fetched automatically during CMake configure via `FetchContent`.
+- The `bash` tool prompts for confirmation before running commands that look destructive (for example `rm`, `git reset --hard`, or `git clean -fd`).

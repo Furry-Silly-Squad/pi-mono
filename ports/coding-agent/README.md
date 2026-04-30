@@ -18,6 +18,12 @@ Prerequisites:
 - CMake 3.20+
 - C++20 compiler (`clang++` or `g++`)
 - libcurl development package
+- readline development package
+
+Install dependencies:
+
+- macOS (Homebrew): `brew install cmake curl readline pkg-config`
+- Ubuntu/Debian: `sudo apt-get install -y cmake build-essential libcurl4-openssl-dev libreadline-dev pkg-config`
 
 Build:
 
@@ -29,6 +35,21 @@ cmake --build ports/coding-agent/build
 Binary:
 
 `ports/coding-agent/build/coding-agent`
+
+If CMake cannot find readline on macOS/Homebrew:
+
+```bash
+export PKG_CONFIG_PATH="/opt/homebrew/opt/readline/lib/pkgconfig:$PKG_CONFIG_PATH"
+cmake -S ports/coding-agent -B ports/coding-agent/build
+```
+
+If you previously configured with missing dependencies, wipe the build dir and reconfigure:
+
+```bash
+rm -rf ports/coding-agent/build
+cmake -S ports/coding-agent -B ports/coding-agent/build
+cmake --build ports/coding-agent/build
+```
 
 ## Run
 
@@ -72,3 +93,4 @@ Settings file (optional):
 
 - Provider integration targets OpenAI-compatible `POST /v1/chat/completions`.
 - Tool-call chunks are parsed from both non-stream and SSE stream responses.
+- `nlohmann/json` is fetched automatically during CMake configure via `FetchContent`.

@@ -17,7 +17,42 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 find_package(CURL REQUIRED)
-find_package(Readline REQUIRED)
+find_package(Readline QUIET)
+
+if(NOT TARGET Readline::Readline)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(PC_READLINE QUIET readline)
+  endif()
+
+  find_path(READLINE_INCLUDE_DIR
+    NAMES readline/readline.h
+    HINTS
+      ${PC_READLINE_INCLUDE_DIRS}
+      /opt/homebrew/opt/readline/include
+      /usr/local/opt/readline/include
+      /usr/include
+  )
+
+  find_library(READLINE_LIBRARY
+    NAMES readline
+    HINTS
+      ${PC_READLINE_LIBRARY_DIRS}
+      /opt/homebrew/opt/readline/lib
+      /usr/local/opt/readline/lib
+      /usr/lib
+  )
+
+  if(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
+    add_library(Readline::Readline UNKNOWN IMPORTED)
+    set_target_properties(Readline::Readline PROPERTIES
+      IMPORTED_LOCATION "${READLINE_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${READLINE_INCLUDE_DIR}"
+    )
+  else()
+    message(FATAL_ERROR "Readline not found. Install readline (e.g. 'brew install readline') and ensure pkg-config can find it.")
+  endif()
+endif()
 
 FetchContent_Declare(
   nlohmann_json

@@ -1,5 +1,6 @@
 #include "agent_loop.hpp"
 
+#include <algorithm>
 #include <sstream>
 
 namespace coding_agent {
@@ -24,11 +25,18 @@ RunResult run_agent_loop(
   session.append(user, persist_error);
 
   for (int iteration = 0; iteration < 20; ++iteration) {
+    const std::vector<ToolDefinition> request_tools =
+        config.no_tools ? std::vector<ToolDefinition>{} : tools.build_tool_definitions();
+    int request_max_tokens = config.max_tokens;
+    if (!request_tools.empty()) {
+      request_max_tokens = std::max(request_max_tokens, 1024);
+    }
+
     ChatRequest request{
         .messages = history,
-        .tools = config.no_tools ? std::vector<ToolDefinition>{} : tools.build_tool_definitions(),
+        .tools = request_tools,
         .model = config.model,
-        .max_tokens = config.max_tokens,
+        .max_tokens = request_max_tokens,
         .temperature = config.temperature,
         .stream = config.stream,
     };

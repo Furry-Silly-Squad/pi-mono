@@ -346,7 +346,21 @@ bool LlamaCppProvider::chat(
         std::cerr << "[debug][tool-stream-invalid] full_arguments_json:\n"
                   << call.arguments_json << "\n";
         std::cerr << "[debug][tool-stream-invalid] tail_300:\n" << tail << "\n";
-        error = "Invalid streamed tool call arguments JSON for tool '" + call.name + "'";
+
+        // Fallback: retry once in non-stream mode to recover from truncated SSE tool-call args.
+        ChatRequest retry_request = request;
+        retry_request.stream = false;
+        ChatResponse retry_response;
+        std::string retry_error;
+        if (chat(retry_request, retry_response, on_chunk, retry_error)) {
+          response = std::move(retry_response);
+          std::cerr << "[debug][tool-stream-fallback] recovered via non-stream retry for tool '" << call.name
+                    << "'\n";
+          return true;
+        }
+
+        error = "Invalid streamed tool call arguments JSON for tool '" + call.name +
+                "' (tail: " + tail + "); fallback non-stream failed: " + retry_error;
         return false;
       }
     }

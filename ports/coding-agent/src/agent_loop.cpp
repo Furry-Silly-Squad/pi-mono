@@ -126,7 +126,8 @@ RunResult run_agent_loop(
         CompactionEvent event{
             .tokens_before = compaction_stats.tokens_before,
             .tokens_after = compaction_stats.tokens_after,
-            .first_kept_index = compaction_stats.first_kept_index,
+            .first_kept_index = -1,
+            .first_kept_entry_id = compaction_stats.first_kept_entry_id.empty() ? std::nullopt : std::optional<std::string>(compaction_stats.first_kept_entry_id),
             .summary = compaction_stats.summary,
         };
         session.append_compaction(event, persist_error_ignored);

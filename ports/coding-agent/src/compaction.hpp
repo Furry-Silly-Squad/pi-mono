@@ -17,9 +17,10 @@ struct CompactionStats {
   int tokens_before = 0;
   int tokens_after = 0;
   int tokens_summarized = 0;
-  int first_kept_index = -1;
+  std::string first_kept_entry_id;
   bool did_compact = false;
   std::string summary;
+  std::string previous_summary;
 };
 
 bool compact_history(

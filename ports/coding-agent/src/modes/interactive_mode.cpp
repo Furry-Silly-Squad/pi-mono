@@ -22,7 +22,6 @@ static std::atomic<bool> global_cancel_flag = false;
 
 void signal_handler(int /*signum*/) {
   global_cancel_flag.store(true, std::memory_order_release);
-  std::cout << "\n[interrupted]\n";
 }
 
 // ANSI color codes

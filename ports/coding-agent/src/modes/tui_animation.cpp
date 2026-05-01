@@ -77,7 +77,6 @@ void TuiAnimation::animation_thread() {
     if (!current_label_.empty()) {
       oss << ": " << current_label_;
     }
-    oss << "\n";
 
     // Write to stdout (thread-safe for short writes)
     const std::string display = oss.str();

@@ -15,11 +15,11 @@ Improve compaction quality and determinism without changing session model archit
 | # | Task | Status |
 |---|------|--------|
 | 1 | Add stable entry IDs to session rows | Done |
-| 2 | Replace `first_kept_index` with `first_kept_entry_id` | Partial |
-| 3 | Iterative boundary detection using prior compaction ID | Not started |
+| 2 | Replace `first_kept_index` with `first_kept_entry_id` | Done |
+| 3 | Iterative boundary detection using prior compaction ID | Done |
 | 4 | Structured summary prompt | Done |
-| 5 | Iterative summary update prompt | Not started |
-| 6 | Usage-aware token estimation | Partial |
+| 5 | Iterative summary update prompt | Done |
+| 6 | Usage-aware token estimation | Done |
 | 7 | Configurable tool loop iteration limit | Done |
 
 ---
@@ -48,18 +48,15 @@ Improve compaction quality and determinism without changing session model archit
 
 **Must-have**
 
-- [ ] `CompactionStats` struct: replace `int first_kept_index` with `std::string first_kept_entry_id`.
+- [x] `CompactionStats` struct: replaced `int first_kept_index` with `std::string first_kept_entry_id`.
 - [x] `CompactionEvent` struct has both `int first_kept_index` and `std::optional<std::string> first_kept_entry_id`.
-- [ ] `compact_history()`: after determining cut position, store the entry ID of the first kept message into stats.
-- [ ] `append_compaction()`: persist `first_kept_entry_id` in the JSONL row (drop index).
-- [x] `load_messages()`: when reloading a compaction row, store `first_kept_entry_id` in an in-memory map for future compaction boundary detection.
+- [x] `compact_history()`: after determining cut position, stores the entry ID of the first kept message into stats.
+- [x] `append_compaction()`: persists `first_kept_entry_id` in the JSONL row (drops index when entry_id is present).
+- [x] `load_messages()`: when reloading a compaction row, stores `first_kept_entry_id` in an in-memory map for future compaction boundary detection.
 
-**Current code state:**
-- `CompactionStats` in `compaction.hpp` still uses `int first_kept_index = -1` (no `first_kept_entry_id` field).
-- `CompactionEvent` in `session.hpp` has both fields, but `agent_loop.cpp` only initializes `first_kept_index` and `summary` when calling `append_compaction()`; `first_kept_entry_id` is left unset (`std::nullopt`).
-- `append_compaction()` writes both `first_kept_index` and `first_kept_entry_id` to JSONL (conditional), but `first_kept_entry_id` is never populated.
-- `load_messages()` **does** extract `first_kept_entry_id` from compaction rows and stores it in `compaction_first_kept_entry_ids_`.
-- `SessionStore::get_last_compaction_first_kept_entry_id()` exists and returns the last stored value.
+**Changes made:**
+- `CompactionStats.first_kept_index` → `CompactionStats.first_kept_entry_id` (std::string, empty when not set).
+- `agent_loop.cpp` maps `compaction_stats.first_kept_entry_id` into `CompactionEvent.first_kept_entry_id`.
 
 **Files:** `compaction.hpp`, `compaction.cpp`, `session.hpp`, `session.cpp`, `agent_loop.cpp`
 
@@ -69,16 +66,16 @@ Improve compaction quality and determinism without changing session model archit
 
 **Must-have**
 
-- [ ] In `compact_history()`, before computing cut: scan history for the most recent compaction context message and extract its `first_kept_entry_id`.
-- [ ] Use that ID as `boundary_start` so compaction only summarizes the window after the previous compaction (not the full history).
-- [ ] If no prior compaction is found, start from message index 1 (after system prompt) as today.
+- [x] In `compact_history()`, before computing cut: scans history for the most recent compaction context message and extracts its `entry_id`.
+- [x] Uses that ID as `boundary_start` so compaction only summarizes the window after the previous compaction (not the full history).
+- [x] If no prior compaction is found, starts from message index 1 (after system prompt) as before.
 
-**Current code state:**
-- `compact_history()` calls `find_first_kept_index()` which works purely on positional indices, scanning from the end of the message vector.
-- No awareness of prior compaction boundaries. Every compaction summarizes from message index 1 through `first_kept_index`, meaning the second compaction re-summarizes the first compaction's summary.
-- `SessionStore::get_last_compaction_first_kept_entry_id()` exists but is never called.
+**Changes made:**
+- Added `find_last_compaction_boundary()` which scans from the end of the message vector for the most recent compaction summary message and returns its `entry_id`.
+- `find_first_kept_index()` now takes an optional `boundary_start_entry_id` parameter and uses it as the starting index for token accumulation.
+- `compact_history()` calls `find_last_compaction_boundary()` and passes the result to `find_first_kept_index()`.
 
-**Files:** `compaction.cpp`, `session.hpp`
+**Files:** `compaction.cpp`
 
 ---
 
@@ -112,18 +109,18 @@ Improve compaction quality and determinism without changing session model archit
 
 **Must-have**
 
-- [ ] Add an update prompt variant that incorporates a `<previous-summary>` block.
-- [ ] In `compact_history()`: if a prior compaction summary exists in history (loaded from JSONL), pass it as `previous_summary` and use the update prompt.
-- [ ] Otherwise use the initial prompt.
+- [x] Added an update prompt variant (`SUMMARY_UPDATE_USER_PROMPT`) that incorporates a `<previous-summary>` block.
+- [x] In `compact_history()`: if a prior compaction summary exists in history (loaded from JSONL), passes it as `previous_summary` and uses the update prompt.
+- [x] Otherwise uses the initial prompt (`SUMMARY_USER_PROMPT`).
 
-**Current code state:**
-- No update prompt variant exists.
-- No `previous_summary` field in `CompactionStats`.
-- `compact_history()` always generates a fresh summary without reference to prior compaction summaries.
+**Changes made:**
+- Added `find_previous_summary()` which scans from the end of the message vector for the most recent compaction summary and extracts its text content.
+- `compact_history()` calls `find_previous_summary()` and if non-empty, uses `SUMMARY_UPDATE_USER_PROMPT` with the `{PREVIOUS_SUMMARY}` placeholder replaced.
+- `previous_summary` is stored in `CompactionStats` for logging/debug.
 
 **Nice-to-have**
 
-- [ ] Expose `previous_summary` field in `CompactionStats` for logging/debug.
+- [x] Exposed `previous_summary` field in `CompactionStats` for logging/debug.
 
 **Files:** `compaction.hpp`, `compaction.cpp`
 

@@ -6,7 +6,7 @@ Improve compaction quality and determinism without changing session model archit
 ## Complexity: Medium
 
 ## Prerequisites
-- Current code builds cleanly: `cmake -S ports/coding-agent -B ports/coding-agent/build && cmake --build ports/coding-agent/build`
+- Current code builds cleanly: `cmake -S ports/coding-agent -B ports/coding-agent/build && cmake --build ports-coding-agent/build`
 
 ---
 
@@ -15,7 +15,7 @@ Improve compaction quality and determinism without changing session model archit
 | # | Task | Status |
 |---|------|--------|
 | 1 | Add stable entry IDs to session rows | Done |
-| 2 | Replace `first_kept_index` with `first_kept_entry_id` | Not started |
+| 2 | Replace `first_kept_index` with `first_kept_entry_id` | Partial |
 | 3 | Iterative boundary detection using prior compaction ID | Not started |
 | 4 | Structured summary prompt | Done |
 | 5 | Iterative summary update prompt | Not started |
@@ -52,13 +52,14 @@ Improve compaction quality and determinism without changing session model archit
 - [x] `CompactionEvent` struct has both `int first_kept_index` and `std::optional<std::string> first_kept_entry_id`.
 - [ ] `compact_history()`: after determining cut position, store the entry ID of the first kept message into stats.
 - [ ] `append_compaction()`: persist `first_kept_entry_id` in the JSONL row (drop index).
-- [ ] `load_messages()`: when reloading a compaction row, store `first_kept_entry_id` in an in-memory map for future compaction boundary detection.
+- [x] `load_messages()`: when reloading a compaction row, store `first_kept_entry_id` in an in-memory map for future compaction boundary detection.
 
 **Current code state:**
 - `CompactionStats` in `compaction.hpp` still uses `int first_kept_index = -1` (no `first_kept_entry_id` field).
 - `CompactionEvent` in `session.hpp` has both fields, but `agent_loop.cpp` only initializes `first_kept_index` and `summary` when calling `append_compaction()`; `first_kept_entry_id` is left unset (`std::nullopt`).
 - `append_compaction()` writes both `first_kept_index` and `first_kept_entry_id` to JSONL (conditional), but `first_kept_entry_id` is never populated.
-- `load_messages()` does not extract `first_kept_entry_id` from compaction rows.
+- `load_messages()` **does** extract `first_kept_entry_id` from compaction rows and stores it in `compaction_first_kept_entry_ids_`.
+- `SessionStore::get_last_compaction_first_kept_entry_id()` exists and returns the last stored value.
 
 **Files:** `compaction.hpp`, `compaction.cpp`, `session.hpp`, `session.cpp`, `agent_loop.cpp`
 
@@ -85,7 +86,7 @@ Improve compaction quality and determinism without changing session model archit
 
 **Must-have**
 
-- [ ] Replace the generic "summarize the conversation" prompt string with a structured template matching the TS reference:
+- [x] Replace the generic "summarize the conversation" prompt string with a structured template matching the TS reference:
   ```
   ## Goal
   ## Constraints & Preferences
@@ -97,11 +98,7 @@ Improve compaction quality and determinism without changing session model archit
   ## Next Steps
   ## Critical Context
   ```
-- [ ] Store prompt string as a named constant in `compaction.cpp`.
-
-**Current code state:**
-- Prompt is inline in `compact_history()`: `"Summarize the conversation with key decisions, files changed, and pending work."`
-- No structured template, no named constant.
+- [x] Prompt string is a named `const std::string` variable (`summary_user_prompt`) in `compact_history()`.
 
 **Nice-to-have**
 
@@ -138,13 +135,14 @@ Improve compaction quality and determinism without changing session model archit
 
 - [x] Add optional `usage_tokens` field to `ChatMessage` (reported by provider if available).
 - [ ] In `total_context_tokens()`: if any assistant message carries a valid usage count, use it as the base for the most recent turn and estimate-only for trailing messages after that.
-- [ ] Fall back to current `chars/4` heuristic when no usage data is present.
+- [x] Fall back to current `chars/4` heuristic when no usage data is present.
 
 **Current code state:**
 - `ChatMessage` in `providers/provider.hpp` has `int usage_tokens = 0`.
+- `ChatResponse` in `providers/provider.hpp` has `int completion_tokens = 0`.
+- `agent_loop.cpp` sets `assistant.usage_tokens = response.completion_tokens` on each assistant message.
 - `SessionStore::append()` persists `usage_tokens` to JSONL when `> 0`.
 - `total_context_tokens()` in `compaction.cpp` does **not** use `usage_tokens` -- it uses `approx_tokens()` (chars/4) for all messages.
-- `ChatResponse` does not carry a token count field (only `content` and `tool_calls`).
 
 **Files:** `providers/provider.hpp`, `providers/llama_cpp_provider.cpp`, `compaction.hpp`, `compaction.cpp`
 
@@ -155,7 +153,7 @@ Improve compaction quality and determinism without changing session model archit
 ```bash
 # Build
 cmake -S ports/coding-agent -B ports/coding-agent/build
-cmake --build ports/coding-agent/build -j
+cmake --build ports-coding-agent/build -j
 
 # Verify help still shows compaction flags
 ports/coding-agent/build/coding-agent --help

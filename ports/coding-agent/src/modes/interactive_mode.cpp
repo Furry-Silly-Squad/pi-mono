@@ -148,12 +148,21 @@ int run_interactive_mode(
     animation.start(AnimationState::Thinking, "");
 
     add_history(prompt.c_str());
-    const RunResult result =
-        run_agent_loop(config, provider, tools, history, session, prompt, [&animation](const std::string& chunk) {
-          // Switch to generating state on first chunk
+    const RunResult result = run_agent_loop(
+        config,
+        provider,
+        tools,
+        history,
+        session,
+        prompt,
+        [&animation](const std::string& chunk) {
+          animation.on_first_stream_chunk();
           animation.update(AnimationState::Generating, "");
           std::cout << chunk << std::flush;
-        }, &global_cancel_flag);
+        },
+        &global_cancel_flag,
+        [&animation]() { animation.resume_for_next_model_turn(); }
+    );
 
     // Stop TUI animation
     animation.stop();
@@ -172,7 +181,7 @@ int run_interactive_mode(
         std::cerr << "\nError: " << result.error << "\n";
       }
     } else {
-      std::cout << "\n";
+      std::cout << "\n[done]\n";
     }
 
     // Print token budget status line after each response

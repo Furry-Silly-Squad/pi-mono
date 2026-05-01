@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -26,7 +27,8 @@ RunResult run_agent_loop(
     SessionStore& session,
     const std::string& user_input,
     const ChunkCallback& on_chunk,
-    std::atomic<bool>* cancel_flag = nullptr
+    std::atomic<bool>* cancel_flag = nullptr,
+    const std::function<void()>& on_before_model_turn = {}
 );
 
 }  // namespace coding_agent

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,6 +30,13 @@ class TuiAnimation {
   // Update the animation state and label (thread-safe)
   void update(AnimationState state, const std::string& label);
 
+  // Call once per streamed chunk batch: clears the spinner line and moves to the next line
+  // before the first chunk of output for the current model call (no-op if spinner already off).
+  void on_first_stream_chunk();
+
+  // Show the spinner again before the next provider.chat (e.g. after tools, next LLM turn).
+  void resume_for_next_model_turn();
+
  private:
   void animation_thread();
 
@@ -37,6 +45,9 @@ class TuiAnimation {
 
   std::atomic<AnimationState> current_state_{AnimationState::Idle};
   std::string current_label_;
+
+  std::mutex io_mutex_;
+  bool show_spinner_{true};
 
   // Unicode spinner frames
   static const std::vector<std::string> spinner_frames_;

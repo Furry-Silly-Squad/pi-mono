@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <functional>
 #include <sstream>
 
 namespace coding_agent {
@@ -14,7 +15,8 @@ RunResult run_agent_loop(
     SessionStore& session,
     const std::string& user_input,
     const ChunkCallback& on_chunk,
-    std::atomic<bool>* cancel_flag
+    std::atomic<bool>* cancel_flag,
+    const std::function<void()>& on_before_model_turn
 ) {
   ChatMessage user{
       .role = "user",
@@ -28,6 +30,10 @@ RunResult run_agent_loop(
   session.append(user, persist_error);
 
   for (int iteration = 0; iteration < config.max_tool_iterations; ++iteration) {
+    if (on_before_model_turn) {
+      on_before_model_turn();
+    }
+
     // Save history state before this turn for potential rollback on interrupt
     const size_t history_size_before = history.size();
 

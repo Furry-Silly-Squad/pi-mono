@@ -130,6 +130,7 @@ int run_interactive_mode(
       std::cout << "Context size: " << config.context_size << "\n";
       std::cout << "Reserve tokens: " << config.compaction_reserve_tokens << "\n";
       std::cout << "Keep recent tokens: " << config.compaction_keep_recent_tokens << "\n";
+      std::cout << "\nCommands: /compact, /clear, /stats, /tokens, /exit\n";
       std::cout << "=====================\n\n";
       continue;
     }
@@ -137,6 +138,42 @@ int run_interactive_mode(
       std::cout << "\nTokens: " << total_context_tokens(history) << " / "
                 << (config.context_size - config.compaction_reserve_tokens) << "\n";
       std::cout << "=====================\n\n";
+      continue;
+    }
+    if (prompt == "/compact") {
+      std::cout << "\n[COMPACT] manually triggering compaction...\n";
+      CompactionStats compaction_stats;
+      std::string compact_error;
+      if (!compact_history(
+              history,
+              provider,
+              config.model,
+              config.compaction_keep_recent_tokens,
+              config.compaction_reserve_tokens,
+              &compaction_stats,
+              compact_error
+          )) {
+        std::cerr << "Compaction failed: " << compact_error << "\n";
+      } else if (compaction_stats.did_compact) {
+        std::cout << "[COMPACT] " << compaction_stats.tokens_before << " -> "
+                  << compaction_stats.tokens_after << " tokens\n";
+        std::string persist_error;
+        CompactionEvent event{
+            .tokens_before = compaction_stats.tokens_before,
+            .tokens_after = compaction_stats.tokens_after,
+            .first_kept_index = -1,
+            .first_kept_entry_id = compaction_stats.first_kept_entry_id.empty()
+                ? std::nullopt
+                : std::optional<std::string>(compaction_stats.first_kept_entry_id),
+            .summary = compaction_stats.summary,
+        };
+        session.append_compaction(event, persist_error);
+        session.record_compaction(event);
+      } else {
+        std::cout << "[COMPACT] no compaction needed (history already within budget)\n";
+      }
+      std::cout << format_token_budget_status(history, config.context_size, config.compaction_reserve_tokens)
+                << "\n";
       continue;
     }
 

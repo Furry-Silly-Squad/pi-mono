@@ -98,7 +98,7 @@ void print_usage() {
       << "  --compaction-keep-recent-tokens <int>\n"
       << "                            Approx recent tokens to keep verbatim (default: 20000)\n"
       << "  --max-tokens <int>        Maximum generated tokens (default: 512)\n"
-      << "  --temperature <float>     Sampling temperature (default: 0.2)\n"
+      << "  --temperature <float>     Sampling temperature (default: 0.6)\n"
       << "  --print                   Force one-shot print mode\n"
       << "  --no-tools                Disable tool calling\n"
       << "  --no-context-files        Do not load AGENTS.md/CLAUDE.md\n"
@@ -130,7 +130,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .context_size = 8192,
       .compaction_reserve_tokens = 16384,
       .compaction_keep_recent_tokens = 20000,
-      .temperature = 0.2f,
+      .temperature = 0.6f,
       .print_mode = false,
       .stream = true,
       .no_tools = false,

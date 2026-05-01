@@ -16,7 +16,7 @@ Add real-time token usage tracking and user-facing feedback to the interactive C
 | # | Task | Status |
 |---|------|--------|
 | 1 | Token usage tracking in `ChatResponse` | Done |
-| 2 | Token budget display in interactive mode | Not started |
+| 2 | Token budget display in interactive mode | Done |
 | 3 | Per-turn token breakdown (content vs tool calls) | Not started |
 | 4 | Compaction proximity indicator | Not started |
 | 5 | `/stats` command in interactive mode | Not started |
@@ -57,14 +57,12 @@ Add real-time token usage tracking and user-facing feedback to the interactive C
 - [ ] If compaction is imminent (within 10% of budget), show warning: `[WARN] compaction in ~<N> tokens`
 
 **Current code state:**
-- `interactive_mode.cpp` has no token tracking or status display.
-- `total_context_tokens()` already computes total tokens from history.
-- Config has `context_size` and `compaction_reserve_tokens`.
-
-**Nice-to-have**
-
-- [ ] Color-code the percentage: green (<50%), yellow (50-80%), red (>80%).
-- [ ] Hide status line if `--no-stream` is used (print mode).
+- `interactive_mode.cpp` now prints a token budget status line after each response.
+- Status format: `[42%] 1234 / 4096 tokens | compaction in ~2862 tokens`
+- Color-coded percentage: green (<50%), yellow (50-80%), red (>80%).
+- Compaction proximity warning printed when within 10% of budget: `[WARN] compaction in ~N tokens`.
+- `total_context_tokens()` used for token calculation; no changes needed there.
+- Status line printed in interactive mode only (print mode does not call `run_interactive_mode`).
 
 **Files:** `modes/interactive_mode.cpp`
 

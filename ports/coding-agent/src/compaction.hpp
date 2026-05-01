@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "file_ops.hpp"
 #include "providers/provider.hpp"
 
 namespace coding_agent {
@@ -25,6 +26,7 @@ struct CompactionStats {
   std::string previous_summary;
   bool is_split_turn = false;
   std::string turn_start_entry_id;
+  FileOps file_ops;
 };
 
 /// Compact history: summarize older messages, keep recent ones verbatim.
@@ -34,6 +36,7 @@ bool compact_history(
     const std::string& model,
     int keep_recent_tokens,
     int reserve_tokens,
+    const FileOps* prior_file_ops,
     CompactionStats* stats,
     std::string& error
 );

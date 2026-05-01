@@ -12,6 +12,7 @@
 
 #include "agent_loop.hpp"
 #include "compaction.hpp"
+#include "file_ops.hpp"
 #include "modes/tui_animation.hpp"
 
 namespace coding_agent {
@@ -150,6 +151,7 @@ int run_interactive_mode(
               config.model,
               config.compaction_keep_recent_tokens,
               config.compaction_reserve_tokens,
+              &session.get_last_compaction_file_ops(),
               &compaction_stats,
               compact_error
           )) {
@@ -162,10 +164,10 @@ int run_interactive_mode(
             .tokens_before = compaction_stats.tokens_before,
             .tokens_after = compaction_stats.tokens_after,
             .first_kept_index = -1,
-            .first_kept_entry_id = compaction_stats.first_kept_entry_id.empty()
-                ? std::nullopt
-                : std::optional<std::string>(compaction_stats.first_kept_entry_id),
+            .first_kept_entry_id = compaction_stats.first_kept_entry_id,
             .summary = compaction_stats.summary,
+            .read_files = sorted_file_list(compaction_stats.file_ops.read_files),
+            .modified_files = sorted_file_list(compaction_stats.file_ops.modified_files),
         };
         session.append_compaction(event, persist_error);
         session.record_compaction(event);

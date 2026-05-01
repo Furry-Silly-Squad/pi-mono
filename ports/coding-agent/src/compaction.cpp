@@ -251,6 +251,7 @@ bool compact_history(
     const std::string& model,
     int keep_recent_tokens,
     int reserve_tokens,
+    const FileOps* prior_file_ops,
     CompactionStats* stats,
     std::string& error
 ) {
@@ -285,10 +286,10 @@ bool compact_history(
 
   std::string turn_prefix_summary;
   std::vector<ChatMessage> to_summarize;
+  std::vector<ChatMessage> turn_prefix_messages;
 
   if (cut.is_split_turn && cut.turn_start_index >= 0) {
     // Collect turn prefix messages (from turn_start to first_kept).
-    std::vector<ChatMessage> turn_prefix_messages;
     for (int i = cut.turn_start_index; i < cut.first_kept_index; ++i) {
       turn_prefix_messages.push_back(messages[static_cast<size_t>(i)]);
     }
@@ -370,6 +371,15 @@ bool compact_history(
     return false;
   }
 
+  FileOps file_ops;
+  if (prior_file_ops != nullptr) {
+    merge_file_ops(file_ops, *prior_file_ops);
+  }
+  merge_file_ops(file_ops, extract_file_ops_from_messages(to_summarize));
+  merge_file_ops(file_ops, extract_file_ops_from_messages(turn_prefix_messages));
+  const std::string file_footer = build_file_ops_footer(file_ops);
+  const std::string final_summary = response.content + file_footer;
+
   // Build compacted message list.
   ChatMessage system_message = messages.front();
   std::vector<ChatMessage> compacted;
@@ -392,7 +402,7 @@ bool compact_history(
   compacted.push_back(
       ChatMessage{
           .role = "assistant",
-          .content = "Conversation summary:\n" + response.content,
+          .content = "Conversation summary:\n" + final_summary,
           .tool_call_id = std::nullopt,
           .tool_calls = {},
       }
@@ -416,7 +426,8 @@ bool compact_history(
           messages[static_cast<size_t>(cut.turn_start_index)].entry_id.value_or("");
     }
     stats->did_compact = true;
-    stats->summary = response.content;
+    stats->summary = final_summary;
+    stats->file_ops = std::move(file_ops);
   }
   return true;
 }

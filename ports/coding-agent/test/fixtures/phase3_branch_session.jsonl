@@ -1,0 +1,3 @@
+{"type":"session","id":"phase3-branch-fixture"}
+{"type":"message","role":"user","content":"hello","id":"u1"}
+{"type":"message","role":"assistant","content":"","id":"a1","tool_calls":[{"id":"t1","name":"read","arguments_json":"{\"path\":\"/fixture/read.txt\"}"},{"id":"t2","name":"edit","arguments_json":"{\"path\":\"/fixture/edit.txt\"}"},{"id":"t3","name":"write","arguments_json":"{\"path\":\"/fixture/write.txt\"}"}]}

@@ -6,10 +6,12 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
 #include "branch_summary.hpp"
+#include "file_ops.hpp"
 
 namespace coding_agent {
 namespace {
@@ -98,9 +100,12 @@ std::string SessionStore::start_or_resume(const std::optional<std::string>& requ
   }
 
   if (force_new && previous_latest.has_value() && previous_latest.value().string() != session_path_) {
+    const BranchSummaryData summary_data = summarize_branch_session_file(previous_latest.value());
     const BranchSummaryEvent event{
-        .summary = summarize_branch_session_file(previous_latest.value()),
+        .summary = summary_data.summary,
         .source_session_id = previous_latest.value().stem().string(),
+        .read_files = summary_data.read_files,
+        .modified_files = summary_data.modified_files,
     };
     std::string append_error;
     append_branch_summary(event, append_error);
@@ -153,9 +158,11 @@ bool SessionStore::append_compaction(const CompactionEvent& event, std::string& 
     if (event.first_kept_index >= 0) {
       row["first_kept_index"] = event.first_kept_index;
     }
-    if (event.first_kept_entry_id.has_value()) {
-      row["first_kept_entry_id"] = event.first_kept_entry_id.value();
+    if (!event.first_kept_entry_id.empty()) {
+      row["first_kept_entry_id"] = event.first_kept_entry_id;
     }
+    row["read_files"] = event.read_files;
+    row["modified_files"] = event.modified_files;
     output << row.dump() << "\n";
     return true;
   } catch (const std::exception& ex) {
@@ -171,6 +178,8 @@ bool SessionStore::append_branch_summary(const BranchSummaryEvent& event, std::s
         {"type", "branch_summary"},
         {"summary", event.summary},
         {"source_session_id", event.source_session_id},
+        {"read_files", event.read_files},
+        {"modified_files", event.modified_files},
     };
     output << row.dump() << "\n";
     return true;
@@ -182,6 +191,8 @@ bool SessionStore::append_branch_summary(const BranchSummaryEvent& event, std::s
 
 std::vector<ChatMessage> SessionStore::load_messages(std::string& error) {
   std::vector<ChatMessage> out;
+  compaction_first_kept_entry_ids_.clear();
+  last_compaction_file_ops_ = FileOps{};
   try {
     std::ifstream input(session_path_);
     std::string line;
@@ -204,6 +215,22 @@ std::vector<ChatMessage> SessionStore::load_messages(std::string& error) {
           if (row.contains("first_kept_entry_id")) {
             compaction_first_kept_entry_ids_.push_back(row.at("first_kept_entry_id").get<std::string>());
           }
+          FileOps loaded_file_ops;
+          if (row.contains("read_files") && row.at("read_files").is_array()) {
+            for (const auto& path : row.at("read_files")) {
+              if (path.is_string()) {
+                loaded_file_ops.read_files.insert(path.get<std::string>());
+              }
+            }
+          }
+          if (row.contains("modified_files") && row.at("modified_files").is_array()) {
+            for (const auto& path : row.at("modified_files")) {
+              if (path.is_string()) {
+                loaded_file_ops.modified_files.insert(path.get<std::string>());
+              }
+            }
+          }
+          last_compaction_file_ops_ = std::move(loaded_file_ops);
         } else if (row.value("type", "") == "branch_summary") {
           const std::string summary = row.value("summary", "");
           const std::string source = row.value("source_session_id", "");
@@ -238,6 +265,17 @@ std::vector<ChatMessage> SessionStore::load_messages(std::string& error) {
       if (row.contains("id")) {
         message.entry_id = row.at("id").get<std::string>();
       }
+      if (row.contains("tool_calls") && row.at("tool_calls").is_array()) {
+        for (const auto& tc : row.at("tool_calls")) {
+          message.tool_calls.push_back(
+              ToolCall{
+                  .id = tc.value("id", ""),
+                  .name = tc.value("name", ""),
+                  .arguments_json = tc.value("arguments_json", "{}"),
+              }
+          );
+        }
+      }
       out.push_back(std::move(message));
     }
   } catch (const std::exception& ex) {
@@ -258,6 +296,10 @@ std::optional<std::string> SessionStore::get_last_compaction_first_kept_entry_id
   return compaction_first_kept_entry_ids_.back();
 }
 
+const FileOps& SessionStore::get_last_compaction_file_ops() const {
+  return last_compaction_file_ops_;
+}
+
 int SessionStore::get_compaction_count() const {
   return compaction_count_;
 }
@@ -269,6 +311,10 @@ const CompactionEvent& SessionStore::get_last_compaction_event() const {
 void SessionStore::record_compaction(const CompactionEvent& event) {
   compaction_count_++;
   last_compaction_event_ = event;
+  last_compaction_file_ops_.read_files =
+      std::unordered_set<std::string>(event.read_files.begin(), event.read_files.end());
+  last_compaction_file_ops_.modified_files =
+      std::unordered_set<std::string>(event.modified_files.begin(), event.modified_files.end());
 }
 
 std::string SessionStore::get_session_id() const {

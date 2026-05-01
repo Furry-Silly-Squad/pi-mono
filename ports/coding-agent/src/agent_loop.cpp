@@ -7,6 +7,8 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 
+#include "file_ops.hpp"
+
 namespace coding_agent {
 namespace {
 
@@ -156,6 +158,7 @@ RunResult run_agent_loop(
               config.model,
               config.compaction_keep_recent_tokens,
               config.compaction_reserve_tokens,
+              &session.get_last_compaction_file_ops(),
               &compaction_stats,
               error
           )) {
@@ -192,8 +195,10 @@ RunResult run_agent_loop(
             .tokens_before = compaction_stats.tokens_before,
             .tokens_after = compaction_stats.tokens_after,
             .first_kept_index = -1,
-            .first_kept_entry_id = compaction_stats.first_kept_entry_id.empty() ? std::nullopt : std::optional<std::string>(compaction_stats.first_kept_entry_id),
+            .first_kept_entry_id = compaction_stats.first_kept_entry_id,
             .summary = compaction_stats.summary,
+            .read_files = sorted_file_list(compaction_stats.file_ops.read_files),
+            .modified_files = sorted_file_list(compaction_stats.file_ops.modified_files),
         };
         session.append_compaction(event, persist_error_ignored);
         session.record_compaction(event);

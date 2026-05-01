@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "file_ops.hpp"
 #include "providers/provider.hpp"
 
 namespace coding_agent {
@@ -12,13 +13,17 @@ struct CompactionEvent {
   int tokens_before = 0;
   int tokens_after = 0;
   int first_kept_index = -1;
-  std::optional<std::string> first_kept_entry_id;
+  std::string first_kept_entry_id;
   std::string summary;
+  std::vector<std::string> read_files;
+  std::vector<std::string> modified_files;
 };
 
 struct BranchSummaryEvent {
   std::string summary;
   std::string source_session_id;
+  std::vector<std::string> read_files;
+  std::vector<std::string> modified_files;
 };
 
 class SessionStore {
@@ -36,6 +41,7 @@ class SessionStore {
 
   // Get the entry_id of the first kept message from the most recent compaction
   std::optional<std::string> get_last_compaction_first_kept_entry_id() const;
+  const FileOps& get_last_compaction_file_ops() const;
 
   // Get compaction statistics
   int get_compaction_count() const;
@@ -65,6 +71,7 @@ class SessionStore {
   // Tracks compaction events for /stats
   int compaction_count_ = 0;
   CompactionEvent last_compaction_event_;
+  FileOps last_compaction_file_ops_;
 };
 
 }  // namespace coding_agent

@@ -72,3 +72,20 @@ target_include_directories(coding-agent
 )
 
 target_link_libraries(coding-agent PRIVATE CURL::libcurl Readline::Readline nlohmann_json::nlohmann_json)
+
+# Deterministic local checks (no provider): pure logic + fixture JSONL
+add_executable(coding-agent-fileops-test test/file_ops_self_test.cpp src/file_ops.cpp)
+target_include_directories(coding-agent-fileops-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-fileops-test PRIVATE nlohmann_json::nlohmann_json)
+
+add_executable(coding-agent-branch-summary-test test/branch_summary_self_test.cpp src/branch_summary.cpp src/file_ops.cpp)
+target_include_directories(coding-agent-branch-summary-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-branch-summary-test PRIVATE nlohmann_json::nlohmann_json)
+target_compile_definitions(
+  coding-agent-branch-summary-test PRIVATE
+  "CODING_AGENT_TEST_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures\""
+)
+
+enable_testing()
+add_test(NAME coding-agent-fileops COMMAND coding-agent-fileops-test)
+add_test(NAME coding-agent-branch-summary COMMAND coding-agent-branch-summary-test)

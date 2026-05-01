@@ -1,7 +1,9 @@
 #pragma once
 
+#include <filesystem>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "file_ops.hpp"
@@ -24,7 +26,51 @@ struct BranchSummaryEvent {
   std::string source_session_id;
   std::vector<std::string> read_files;
   std::vector<std::string> modified_files;
+  /// Leaf entry id on the source session when summarizing an abandoned branch (for injection logic).
+  std::string handoff_source_leaf_id;
 };
+
+enum class SessionRowKind {
+  SessionHeader,
+  Message,
+  Compaction,
+  BranchSummary,
+  CompactionSkipped,
+};
+
+/// One parsed row from a session JSONL file (tree node).
+struct SessionNode {
+  std::string id;
+  std::string parent_id;
+  SessionRowKind kind = SessionRowKind::Message;
+  ChatMessage message{};
+  std::optional<CompactionEvent> compaction;
+  struct BranchRowData {
+    std::string summary;
+    std::string source_session_id;
+    std::string handoff_source_leaf_id;
+    std::vector<std::string> read_files;
+    std::vector<std::string> modified_files;
+  };
+  std::optional<BranchRowData> branch;
+};
+
+/// Parsed session tree from a JSONL file (ids, parent links, leaf).
+struct SessionGraph {
+  std::unordered_map<std::string, SessionNode> nodes;
+  /// Last row id in file order (any row type with an id).
+  std::string leaf_id;
+
+  [[nodiscard]] std::vector<std::string> get_branch(const std::string& entry_id) const;
+  [[nodiscard]] std::string find_common_ancestor(const std::string& id_a, const std::string& id_b) const;
+  [[nodiscard]] const SessionNode* get_node(const std::string& id) const;
+};
+
+/// Load session tree from JSONL (for branch summarization and traversal).
+bool load_session_graph(const std::string& path, SessionGraph& out, std::string& error);
+
+/// Most recently modified `.jsonl` session file in a directory, if any.
+std::optional<std::filesystem::path> latest_session_path_in_dir(const std::string& session_dir);
 
 class SessionStore {
  public:
@@ -56,10 +102,22 @@ class SessionStore {
   // Get session file path
   const std::string& get_session_path() const;
 
+  [[nodiscard]] const std::string& session_dir() const;
+
+  /// Populated after load_messages(); reflects persisted tree + rows appended this run (best-effort).
+  [[nodiscard]] const SessionGraph& graph() const;
+
+  [[nodiscard]] std::vector<std::string> get_branch(const std::string& entry_id) const;
+  [[nodiscard]] std::string find_common_ancestor(const std::string& id_a, const std::string& id_b) const;
+
  private:
   std::string session_dir_;
   std::string session_id_;
   std::string session_path_;
+  /// Last written row id in this session file (for parent linkage).
+  std::string last_written_entry_id_;
+  SessionGraph graph_;
+
   // Maps message index to entry_id for loaded messages
   std::vector<std::string> message_entry_ids_;
   // Stores first_kept_entry_id from each compaction row

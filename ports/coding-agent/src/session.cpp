@@ -5,12 +5,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <map>
 #include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
-#include "branch_summary.hpp"
 #include "file_ops.hpp"
 
 namespace coding_agent {
@@ -43,10 +41,45 @@ std::string now_id() {
   return std::to_string(ms.time_since_epoch().count());
 }
 
-std::optional<std::filesystem::path> latest_session_path(const std::string& session_dir) {
-  std::filesystem::file_time_type newest_time;
-  std::optional<std::filesystem::path> latest;
-  for (const auto& entry : std::filesystem::directory_iterator(session_dir)) {
+std::string synthetic_id_for_line(int line_index) {
+  return "legacy_" + std::to_string(line_index);
+}
+
+CompactionEvent parse_compaction_row(const json& row, const std::string& row_id) {
+  CompactionEvent event{};
+  event.tokens_before = row.value("tokens_before", 0);
+  event.tokens_after = row.value("tokens_after", 0);
+  event.summary = row.value("summary", "");
+  event.first_kept_index = row.value("first_kept_index", -1);
+  event.first_kept_entry_id = row.value("first_kept_entry_id", "");
+  if (row.contains("read_files") && row.at("read_files").is_array()) {
+    for (const auto& path : row.at("read_files")) {
+      if (path.is_string()) {
+        event.read_files.push_back(path.get<std::string>());
+      }
+    }
+  }
+  if (row.contains("modified_files") && row.at("modified_files").is_array()) {
+    for (const auto& path : row.at("modified_files")) {
+      if (path.is_string()) {
+        event.modified_files.push_back(path.get<std::string>());
+      }
+    }
+  }
+  (void)row_id;
+  return event;
+}
+
+}  // namespace
+
+std::optional<std::filesystem::path> latest_session_path_in_dir(const std::string& session_dir) {
+  namespace fs = std::filesystem;
+  if (!fs::exists(session_dir) || !fs::is_directory(session_dir)) {
+    return std::nullopt;
+  }
+  fs::file_time_type newest_time;
+  std::optional<fs::path> latest;
+  for (const auto& entry : fs::directory_iterator(session_dir)) {
     if (!entry.is_regular_file() || entry.path().extension() != ".jsonl") {
       continue;
     }
@@ -58,7 +91,154 @@ std::optional<std::filesystem::path> latest_session_path(const std::string& sess
   return latest;
 }
 
-}  // namespace
+std::vector<std::string> SessionGraph::get_branch(const std::string& entry_id) const {
+  std::vector<std::string> rev;
+  std::string cur = entry_id;
+  std::unordered_set<std::string> guard;
+  while (!cur.empty()) {
+    if (guard.count(cur) != 0U) {
+      break;
+    }
+    guard.insert(cur);
+    rev.push_back(cur);
+    auto it = nodes.find(cur);
+    if (it == nodes.end()) {
+      break;
+    }
+    cur = it->second.parent_id;
+  }
+  std::reverse(rev.begin(), rev.end());
+  return rev;
+}
+
+std::string SessionGraph::find_common_ancestor(const std::string& id_a, const std::string& id_b) const {
+  if (id_a.empty() || id_b.empty()) {
+    return "";
+  }
+  const auto path_a = get_branch(id_a);
+  std::unordered_set<std::string> set_a(path_a.begin(), path_a.end());
+  const auto path_b = get_branch(id_b);
+  for (auto it = path_b.rbegin(); it != path_b.rend(); ++it) {
+    if (set_a.count(*it) != 0U) {
+      return *it;
+    }
+  }
+  return "";
+}
+
+const SessionNode* SessionGraph::get_node(const std::string& id) const {
+  auto it = nodes.find(id);
+  if (it == nodes.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+bool load_session_graph(const std::string& path, SessionGraph& out, std::string& error) {
+  out.nodes.clear();
+  out.leaf_id.clear();
+  try {
+    std::ifstream input(path);
+    if (!input.is_open()) {
+      error = "cannot open session file";
+      return false;
+    }
+    std::string line;
+    int line_index = 0;
+    std::string prev_row_id;
+    std::string last_id_any;
+    while (std::getline(input, line)) {
+      ++line_index;
+      if (line.empty()) {
+        continue;
+      }
+      const auto row = json::parse(line, nullptr, false);
+      if (row.is_discarded()) {
+        continue;
+      }
+      const std::string type = row.value("type", "");
+
+      std::string row_id;
+      if (row.contains("id") && row.at("id").is_string()) {
+        row_id = row.at("id").get<std::string>();
+      } else {
+        row_id = synthetic_id_for_line(line_index);
+      }
+
+      std::string parent_id;
+      if (row.contains("parent_id") && row.at("parent_id").is_string()) {
+        parent_id = row.at("parent_id").get<std::string>();
+      } else if (!prev_row_id.empty()) {
+        parent_id = prev_row_id;
+      }
+
+      SessionNode node;
+      node.id = row_id;
+      node.parent_id = parent_id;
+
+      if (type == "session") {
+        node.kind = SessionRowKind::SessionHeader;
+      } else if (type == "message") {
+        node.kind = SessionRowKind::Message;
+        node.message.role = row.value("role", "");
+        node.message.content = row.value("content", "");
+        if (row.contains("tool_call_id")) {
+          node.message.tool_call_id = row.at("tool_call_id").get<std::string>();
+        }
+        if (row.contains("tool_calls") && row.at("tool_calls").is_array()) {
+          for (const auto& tc : row.at("tool_calls")) {
+            node.message.tool_calls.push_back(
+                ToolCall{
+                    .id = tc.value("id", ""),
+                    .name = tc.value("name", ""),
+                    .arguments_json = tc.value("arguments_json", "{}"),
+                }
+            );
+          }
+        }
+        node.message.usage_tokens = row.value("usage_tokens", 0);
+        node.message.entry_id = row_id;
+      } else if (type == "compaction") {
+        node.kind = SessionRowKind::Compaction;
+        node.compaction = parse_compaction_row(row, row_id);
+      } else if (type == "branch_summary") {
+        node.kind = SessionRowKind::BranchSummary;
+        SessionNode::BranchRowData br;
+        br.summary = row.value("summary", "");
+        br.source_session_id = row.value("source_session_id", "");
+        br.handoff_source_leaf_id = row.value("handoff_source_leaf_id", "");
+        if (row.contains("read_files") && row.at("read_files").is_array()) {
+          for (const auto& p : row.at("read_files")) {
+            if (p.is_string()) {
+              br.read_files.push_back(p.get<std::string>());
+            }
+          }
+        }
+        if (row.contains("modified_files") && row.at("modified_files").is_array()) {
+          for (const auto& p : row.at("modified_files")) {
+            if (p.is_string()) {
+              br.modified_files.push_back(p.get<std::string>());
+            }
+          }
+        }
+        node.branch = std::move(br);
+      } else if (type == "compaction_skipped") {
+        node.kind = SessionRowKind::CompactionSkipped;
+      } else {
+        node.kind = SessionRowKind::Message;
+      }
+
+      out.nodes[row_id] = std::move(node);
+      prev_row_id = row_id;
+      last_id_any = row_id;
+    }
+    out.leaf_id = last_id_any;
+    return true;
+  } catch (const std::exception& ex) {
+    error = ex.what();
+    return false;
+  }
+}
 
 SessionStore::SessionStore(std::string cwd, std::optional<std::string> session_dir_override)
     : session_dir_(
@@ -73,11 +253,6 @@ SessionStore::SessionStore(std::string cwd, std::optional<std::string> session_d
 }
 
 std::string SessionStore::start_or_resume(const std::optional<std::string>& requested_id, bool force_new) {
-  std::optional<std::filesystem::path> previous_latest;
-  if (force_new) {
-    previous_latest = latest_session_path(session_dir_);
-  }
-
   if (requested_id.has_value()) {
     session_id_ = requested_id.value();
   } else if (force_new) {
@@ -103,34 +278,44 @@ std::string SessionStore::start_or_resume(const std::optional<std::string>& requ
   session_path_ = (std::filesystem::path(session_dir_) / (session_id_ + ".jsonl")).string();
   if (!std::filesystem::exists(session_path_)) {
     std::ofstream output(session_path_, std::ios::app);
-    output << json({{"type", "session"}, {"id", session_id_}}).dump() << "\n";
-  }
-
-  if (force_new && previous_latest.has_value() && previous_latest.value().string() != session_path_) {
-    const BranchSummaryData summary_data = summarize_branch_session_file(previous_latest.value());
-    const BranchSummaryEvent event{
-        .summary = summary_data.summary,
-        .source_session_id = previous_latest.value().stem().string(),
-        .read_files = summary_data.read_files,
-        .modified_files = summary_data.modified_files,
+    json session_row{
+        {"type", "session"},
+        {"id", session_id_},
+        {"parent_id", ""},
     };
-    std::string append_error;
-    append_branch_summary(event, append_error);
+    output << session_row.dump() << "\n";
+    graph_.nodes.clear();
+    SessionNode root{};
+    root.id = session_id_;
+    root.parent_id = "";
+    root.kind = SessionRowKind::SessionHeader;
+    graph_.nodes[session_id_] = std::move(root);
+    graph_.leaf_id = session_id_;
+    last_written_entry_id_ = session_id_;
+  } else {
+    std::string graph_error;
+    if (!load_session_graph(session_path_, graph_, graph_error)) {
+      graph_.nodes.clear();
+      graph_.leaf_id.clear();
+      last_written_entry_id_.clear();
+    } else {
+      last_written_entry_id_ = graph_.leaf_id;
+    }
   }
   return session_id_;
 }
 
 bool SessionStore::append(const ChatMessage& message, std::string& error) {
   try {
+    std::string row_id = message.entry_id.has_value() ? message.entry_id.value() : generate_entry_id();
     std::ofstream output(session_path_, std::ios::app);
     json row{
         {"type", "message"},
         {"role", message.role},
         {"content", message.content},
+        {"id", row_id},
+        {"parent_id", last_written_entry_id_},
     };
-    if (message.entry_id.has_value()) {
-      row["id"] = message.entry_id.value();
-    }
     if (message.tool_call_id.has_value()) {
       row["tool_call_id"] = message.tool_call_id.value();
     }
@@ -146,6 +331,16 @@ bool SessionStore::append(const ChatMessage& message, std::string& error) {
       row["usage_tokens"] = message.usage_tokens;
     }
     output << row.dump() << "\n";
+
+    SessionNode node{};
+    node.id = row_id;
+    node.parent_id = last_written_entry_id_;
+    node.kind = SessionRowKind::Message;
+    node.message = message;
+    node.message.entry_id = row_id;
+    graph_.nodes[row_id] = std::move(node);
+    last_written_entry_id_ = row_id;
+    graph_.leaf_id = row_id;
     return true;
   } catch (const std::exception& ex) {
     error = ex.what();
@@ -155,9 +350,12 @@ bool SessionStore::append(const ChatMessage& message, std::string& error) {
 
 bool SessionStore::append_compaction(const CompactionEvent& event, std::string& error) {
   try {
+    const std::string row_id = generate_entry_id();
     std::ofstream output(session_path_, std::ios::app);
     json row{
         {"type", "compaction"},
+        {"id", row_id},
+        {"parent_id", last_written_entry_id_},
         {"tokens_before", event.tokens_before},
         {"tokens_after", event.tokens_after},
         {"summary", event.summary},
@@ -171,6 +369,15 @@ bool SessionStore::append_compaction(const CompactionEvent& event, std::string& 
     row["read_files"] = event.read_files;
     row["modified_files"] = event.modified_files;
     output << row.dump() << "\n";
+
+    SessionNode node{};
+    node.id = row_id;
+    node.parent_id = last_written_entry_id_;
+    node.kind = SessionRowKind::Compaction;
+    node.compaction = event;
+    graph_.nodes[row_id] = std::move(node);
+    last_written_entry_id_ = row_id;
+    graph_.leaf_id = row_id;
     return true;
   } catch (const std::exception& ex) {
     error = ex.what();
@@ -180,15 +387,37 @@ bool SessionStore::append_compaction(const CompactionEvent& event, std::string& 
 
 bool SessionStore::append_branch_summary(const BranchSummaryEvent& event, std::string& error) {
   try {
+    const std::string row_id = generate_entry_id();
     std::ofstream output(session_path_, std::ios::app);
     json row{
         {"type", "branch_summary"},
+        {"id", row_id},
+        {"parent_id", last_written_entry_id_},
         {"summary", event.summary},
         {"source_session_id", event.source_session_id},
         {"read_files", event.read_files},
         {"modified_files", event.modified_files},
     };
+    if (!event.handoff_source_leaf_id.empty()) {
+      row["handoff_source_leaf_id"] = event.handoff_source_leaf_id;
+    }
     output << row.dump() << "\n";
+
+    SessionNode node{};
+    node.id = row_id;
+    node.parent_id = last_written_entry_id_;
+    node.kind = SessionRowKind::BranchSummary;
+    SessionNode::BranchRowData br{
+        .summary = event.summary,
+        .source_session_id = event.source_session_id,
+        .handoff_source_leaf_id = event.handoff_source_leaf_id,
+        .read_files = event.read_files,
+        .modified_files = event.modified_files,
+    };
+    node.branch = std::move(br);
+    graph_.nodes[row_id] = std::move(node);
+    last_written_entry_id_ = row_id;
+    graph_.leaf_id = row_id;
     return true;
   } catch (const std::exception& ex) {
     error = ex.what();
@@ -200,6 +429,19 @@ std::vector<ChatMessage> SessionStore::load_messages(std::string& error) {
   std::vector<ChatMessage> out;
   compaction_first_kept_entry_ids_.clear();
   last_compaction_file_ops_ = FileOps{};
+  std::string graph_err;
+  if (!load_session_graph(session_path_, graph_, graph_err)) {
+    error = graph_err;
+    return out;
+  }
+  last_written_entry_id_ = graph_.leaf_id;
+
+  std::unordered_set<std::string> leaf_path_ids;
+  if (!graph_.leaf_id.empty()) {
+    const auto path_ids = graph_.get_branch(graph_.leaf_id);
+    leaf_path_ids.insert(path_ids.begin(), path_ids.end());
+  }
+
   try {
     std::ifstream input(session_path_);
     std::string line;
@@ -239,6 +481,10 @@ std::vector<ChatMessage> SessionStore::load_messages(std::string& error) {
           }
           last_compaction_file_ops_ = std::move(loaded_file_ops);
         } else if (row.value("type", "") == "branch_summary") {
+          const std::string handoff = row.value("handoff_source_leaf_id", "");
+          if (!handoff.empty() && leaf_path_ids.count(handoff) != 0U) {
+            continue;
+          }
           const std::string summary = row.value("summary", "");
           const std::string source = row.value("source_session_id", "");
           ChatMessage message{
@@ -330,6 +576,22 @@ std::string SessionStore::get_session_id() const {
 
 const std::string& SessionStore::get_session_path() const {
   return session_path_;
+}
+
+const std::string& SessionStore::session_dir() const {
+  return session_dir_;
+}
+
+const SessionGraph& SessionStore::graph() const {
+  return graph_;
+}
+
+std::vector<std::string> SessionStore::get_branch(const std::string& entry_id) const {
+  return graph_.get_branch(entry_id);
+}
+
+std::string SessionStore::find_common_ancestor(const std::string& id_a, const std::string& id_b) const {
+  return graph_.find_common_ancestor(id_a, id_b);
 }
 
 }  // namespace coding_agent

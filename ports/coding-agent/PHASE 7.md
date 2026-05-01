@@ -17,7 +17,7 @@ The C++ port now includes an `AgentSession` API declaration in `agent_session.hp
 | Thinking levels (off, minimal, low, medium, high, xhigh) | Yes | Partial (`off..high` declared; no `xhigh` level in C++ enum) |
 | Queue management (steer, followUp, clearQueue) | Yes | No |
 | Auto-compaction (overflow recovery, threshold-based) | Yes | Partial (threshold-triggered in `agent_loop`; no `AgentSession` integration) |
-| Branch summarization (navigateTree, generateBranchSummary) | Yes | Partial (branch_summary.cpp exists but not wired to session) |
+| Branch summarization (navigateTree, generateBranchSummary) | Yes | Partial (`generate_branch_summary` + `--new-session` / cross-session `--session` handoff in `agent.cpp`; no interactive tree navigation) |
 | Auto-retry with exponential backoff | Yes | No |
 | Bash execution with streaming and abort | Yes | No (bash is a tool, not a session-level operation) |
 | Session name management | Yes | No |
@@ -42,7 +42,7 @@ The C++ `SessionStore` remains a linear JSONL store (not a tree manager), but it
 
 | Feature | TypeScript | C++ Port |
 |---------|-----------|----------|
-| SessionManager class | Full tree traversal, branching | No (SessionStore is flat) |
+| SessionManager class | Full tree traversal, branching | No (JSONL remains linear on disk; `SessionGraph` + `parent_id` supports branch traversal and handoff) |
 | Session entry types (message, compaction, custom, branchSummary, bashExecution, modelChange, thinkingLevelChange, sessionInfo, label) | 9+ entry types | Partial (`message`, `compaction`, `branch_summary`, `compaction_skipped`) |
 | Branch/leaf management (branch, resetLeaf, getLeafId) | Yes | No |
 | Custom entries (compactionSummary, branchSummary, bashExecution, modelChange, thinkingLevelChange, sessionInfo, label) | Yes | Partial (`compaction` + `branch_summary` rows supported) |
@@ -102,9 +102,9 @@ The C++ `SessionStore` remains a linear JSONL store (not a tree manager), but it
 | calculateContextTokens | Token counting | Partial (total_context_tokens) |
 | estimateContextTokens | Estimate from usage data | No |
 | shouldCompact | Threshold checking | Partial (should_compact) |
-| generateBranchSummary | Branch summarization | Partial (branch_summary.cpp) |
-| collectEntriesForBranchSummary | Entry collection | Partial |
-| serializeConversation | Session serialization | Partial |
+| generateBranchSummary | Branch summarization | Partial (`generate_branch_summary` in `branch_summary.cpp`; no `navigateTree` UI) |
+| collectEntriesForBranchSummary | Entry collection | Partial (`collect_entries_for_branch_summary` in `branch_summary.cpp`) |
+| serializeConversation | Session serialization | Partial (inline for branch summarization prompt) |
 | Compaction settings (from SettingsManager) | Yes | Partial (from `Config` loaded via settings/env/CLI) |
 | Auto-compaction (overflow + threshold) | Yes | Partial (threshold check + compaction in `agent_loop`) |
 | Compaction failure handling (fail-fast vs graceful skip) | Yes | Partial (`compaction_fail_fast` and graceful skip mode both supported) |

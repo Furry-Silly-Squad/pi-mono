@@ -107,6 +107,7 @@ void print_usage() {
       << "  --no-stream               Disable streaming mode\n"
       << "  --no-compaction-fail-fast\n"
       << "                            Skip compaction on failure instead of aborting\n"
+      << "  --no-branch-summary       Skip branch summarization when starting a new session or switching sessions\n"
       << "  --prompt <text>           Prompt text to send\n"
       << "  --help                    Show this help\n"
       << "\n"
@@ -143,6 +144,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .no_context_files = false,
       .new_session = false,
       .compaction_fail_fast = true,
+      .branch_summary = true,
   };
 
   if (const auto settings = load_settings_json(); settings.has_value()) {
@@ -281,6 +283,10 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     }
     if (arg == "--no-compaction-fail-fast") {
       config.compaction_fail_fast = false;
+      continue;
+    }
+    if (arg == "--no-branch-summary") {
+      config.branch_summary = false;
       continue;
     }
     if (arg == "--prompt" && i + 1 < argc) {

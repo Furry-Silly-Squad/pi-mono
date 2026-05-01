@@ -10,6 +10,7 @@
 
 #include <unistd.h>
 
+#include "branch_summary.hpp"
 #include "context_loader.hpp"
 #include "modes/interactive_mode.hpp"
 #include "modes/print_mode.hpp"
@@ -70,7 +71,61 @@ int run_agent(int argc, char** argv) {
   }
 
   SessionStore session(config->cwd);
+
+  std::optional<std::filesystem::path> handoff_old_file;
+  std::optional<std::string> handoff_old_leaf;
+  if (config->branch_summary) {
+    if (config->new_session) {
+      if (const auto prev = latest_session_path_in_dir(session.session_dir()); prev.has_value()) {
+        SessionGraph graph;
+        std::string graph_error;
+        if (load_session_graph(prev->string(), graph, graph_error) && !graph.leaf_id.empty()) {
+          handoff_old_file = prev;
+          handoff_old_leaf = graph.leaf_id;
+        }
+      }
+    } else if (config->session_id.has_value()) {
+      if (const auto latest = latest_session_path_in_dir(session.session_dir()); latest.has_value()) {
+        if (latest->stem().string() != config->session_id.value()) {
+          SessionGraph graph;
+          std::string graph_error;
+          if (load_session_graph(latest->string(), graph, graph_error) && !graph.leaf_id.empty()) {
+            handoff_old_file = latest;
+            handoff_old_leaf = graph.leaf_id;
+          }
+        }
+      }
+    }
+  }
+
   session.start_or_resume(config->session_id, config->new_session);
+
+  if (config->branch_summary && handoff_old_file.has_value() && handoff_old_leaf.has_value()) {
+    SessionGraph old_graph;
+    std::string graph_error;
+    if (load_session_graph(handoff_old_file->string(), old_graph, graph_error)) {
+      const std::vector<SessionNode> collected =
+          collect_entries_for_branch_summary(old_graph, handoff_old_leaf.value(), "");
+      std::string gen_error;
+      const BranchSummaryResult branch_result = generate_branch_summary(
+          collected,
+          provider,
+          config->model,
+          config->context_size,
+          config->compaction_reserve_tokens,
+          gen_error
+      );
+      BranchSummaryEvent branch_event{
+          .summary = branch_result.summary,
+          .source_session_id = handoff_old_file->stem().string(),
+          .read_files = branch_result.read_files,
+          .modified_files = branch_result.modified_files,
+          .handoff_source_leaf_id = handoff_old_leaf.value(),
+      };
+      std::string append_error;
+      (void)session.append_branch_summary(branch_event, append_error);
+    }
+  }
 
   std::string load_error;
   std::vector<ChatMessage> history = session.load_messages(load_error);

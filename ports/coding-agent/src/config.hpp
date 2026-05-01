@@ -28,6 +28,8 @@ struct Config {
   bool no_context_files;
   bool new_session;
   bool compaction_fail_fast;
+  /// When false, skip LLM branch summarization on `--new-session` / cross-session resume.
+  bool branch_summary;
 };
 
 std::optional<Config> parse_config(int argc, char** argv, std::string& error);

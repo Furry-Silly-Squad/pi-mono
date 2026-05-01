@@ -101,6 +101,7 @@ Improve summary usefulness by carrying forward concrete file-level context throu
     std::string source_session_id;
     std::vector<std::string> read_files;
     std::vector<std::string> modified_files;
+    std::string handoff_source_leaf_id;  // Phase 4: optional; reload injection (see PHASE-4 task 7)
   };
   ```
 - [x] In `summarize_branch_session_file()`: call `extract_file_ops_from_messages()` on the session content, append the file footer to the summary, and return `read_files`/`modified_files` alongside.

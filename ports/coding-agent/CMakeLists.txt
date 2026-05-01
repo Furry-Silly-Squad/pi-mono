@@ -78,7 +78,7 @@ add_executable(coding-agent-fileops-test test/file_ops_self_test.cpp src/file_op
 target_include_directories(coding-agent-fileops-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(coding-agent-fileops-test PRIVATE nlohmann_json::nlohmann_json)
 
-add_executable(coding-agent-branch-summary-test test/branch_summary_self_test.cpp src/branch_summary.cpp src/file_ops.cpp)
+add_executable(coding-agent-branch-summary-test test/branch_summary_self_test.cpp src/branch_summary.cpp src/session.cpp src/compaction.cpp src/file_ops.cpp)
 target_include_directories(coding-agent-branch-summary-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(coding-agent-branch-summary-test PRIVATE nlohmann_json::nlohmann_json)
 target_compile_definitions(
@@ -86,9 +86,13 @@ target_compile_definitions(
   "CODING_AGENT_TEST_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures\""
 )
 
-add_executable(coding-agent-session-store-test test/session_store_roundtrip_test.cpp src/session.cpp src/branch_summary.cpp src/file_ops.cpp)
+add_executable(coding-agent-session-store-test test/session_store_roundtrip_test.cpp src/session.cpp src/file_ops.cpp)
 target_include_directories(coding-agent-session-store-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(coding-agent-session-store-test PRIVATE nlohmann_json::nlohmann_json)
+
+add_executable(coding-agent-branch-traversal-test test/branch_traversal_test.cpp src/session.cpp src/branch_summary.cpp src/compaction.cpp src/file_ops.cpp)
+target_include_directories(coding-agent-branch-traversal-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-branch-traversal-test PRIVATE nlohmann_json::nlohmann_json)
 
 add_executable(coding-agent-compaction-carry-forward-test test/compaction_carry_forward_test.cpp src/compaction.cpp src/file_ops.cpp)
 target_include_directories(coding-agent-compaction-carry-forward-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -98,4 +102,5 @@ enable_testing()
 add_test(NAME coding-agent-fileops COMMAND coding-agent-fileops-test)
 add_test(NAME coding-agent-branch-summary COMMAND coding-agent-branch-summary-test)
 add_test(NAME coding-agent-session-store COMMAND coding-agent-session-store-test)
+add_test(NAME coding-agent-branch-traversal COMMAND coding-agent-branch-traversal-test)
 add_test(NAME coding-agent-compaction-carry-forward COMMAND coding-agent-compaction-carry-forward-test)

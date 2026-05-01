@@ -3,9 +3,52 @@
 #include <atomic>
 #include <algorithm>
 #include <functional>
+#include <nlohmann/json.hpp>
 #include <sstream>
 
 namespace coding_agent {
+namespace {
+
+std::string describe_tool_call(const std::string& tool_name, const std::string& args_json) {
+  try {
+    const auto args = nlohmann::json::parse(args_json);
+    if (tool_name == "edit") {
+      std::string path = args.value("path", "");
+      return "edit " + path;
+    } else if (tool_name == "bash") {
+      std::string command = args.value("command", "");
+      if (command.size() > 80) {
+        command = command.substr(0, 80) + "...";
+      }
+      return "bash: " + command;
+    } else if (tool_name == "read") {
+      std::string path = args.value("path", "");
+      return "read " + path;
+    } else if (tool_name == "write") {
+      std::string path = args.value("path", "");
+      return "write " + path;
+    } else if (tool_name == "grep") {
+      std::string pattern = args.value("pattern", "");
+      std::string path = args.value("path", "");
+      if (path.empty() && args.contains("paths")) {
+        path = args.at("paths").get<std::string>();
+      }
+      return "grep '" + pattern + "' " + path;
+    } else if (tool_name == "find") {
+      std::string path = args.value("path", "");
+      std::string name = args.value("name", "");
+      return "find " + path + (name.empty() ? "" : " -name " + name);
+    } else if (tool_name == "ls") {
+      std::string path = args.value("path", "");
+      return "ls " + path;
+    }
+  } catch (...) {
+    // If parsing fails, fall through to the generic message
+  }
+  return tool_name;
+}
+
+}  // namespace
 
 RunResult run_agent_loop(
     const Config& config,
@@ -140,9 +183,9 @@ RunResult run_agent_loop(
     }
 
     for (const auto& call : response.tool_calls) {
-      // Print tool execution status
+      // Print tool execution status with human-readable description
       std::ostringstream tool_status;
-      tool_status << "[tool: " << call.name << "] running...\n";
+      tool_status << "[tool: " << call.name << "] " << describe_tool_call(call.name, call.arguments_json) << "\n";
       on_chunk(tool_status.str());
 
       const ToolResult result = tools.dispatch(call.name, call.arguments_json, config.cwd);

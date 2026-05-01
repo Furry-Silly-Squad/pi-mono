@@ -1,5 +1,7 @@
 #include "modes/interactive_mode.hpp"
 
+#include <atomic>
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -10,9 +12,18 @@
 
 #include "agent_loop.hpp"
 #include "compaction.hpp"
+#include "modes/tui_animation.hpp"
 
 namespace coding_agent {
 namespace {
+
+// Global cancel flag for Ctrl+C handling
+static std::atomic<bool> global_cancel_flag = false;
+
+void signal_handler(int /*signum*/) {
+  global_cancel_flag.store(true, std::memory_order_release);
+  std::cout << "\n[interrupted]\n";
+}
 
 // ANSI color codes
 const char* COLOR_GREEN = "\033[0;32m";
@@ -69,6 +80,15 @@ int run_interactive_mode(
     std::vector<ChatMessage>& history,
     SessionStore& session
 ) {
+  // Set up signal handler for Ctrl+C
+  struct sigaction sa;
+  sa.sa_handler = signal_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sigaction(SIGINT, &sa, nullptr);
+
+  global_cancel_flag.store(false, std::memory_order_release);
+
   while (true) {
     char* line = readline("> ");
     if (line == nullptr) {
@@ -121,11 +141,23 @@ int run_interactive_mode(
       continue;
     }
 
+    // Reset cancel flag for new request
+    global_cancel_flag.store(false, std::memory_order_release);
+
+    // Start TUI animation while waiting for LLM
+    TuiAnimation animation;
+    animation.start(AnimationState::Thinking, "");
+
     add_history(prompt.c_str());
     const RunResult result =
-        run_agent_loop(config, provider, tools, history, session, prompt, [](const std::string& chunk) {
+        run_agent_loop(config, provider, tools, history, session, prompt, [&animation](const std::string& chunk) {
+          // Switch to generating state on first chunk
+          animation.update(AnimationState::Generating, "");
           std::cout << chunk << std::flush;
-        });
+        }, &global_cancel_flag);
+
+    // Stop TUI animation
+    animation.stop();
 
     // Print compaction proximity warning if needed
     if (should_warn_compaction(history, config.context_size, config.compaction_reserve_tokens)) {
@@ -135,7 +167,11 @@ int run_interactive_mode(
     }
 
     if (!result.ok) {
-      std::cerr << "\nError: " << result.error << "\n";
+      if (result.error == "interrupted") {
+        std::cout << "\n[interrupted]\n";
+      } else {
+        std::cerr << "\nError: " << result.error << "\n";
+      }
     } else {
       std::cout << "\n";
     }

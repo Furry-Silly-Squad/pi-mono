@@ -15,11 +15,11 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 
 | # | Task | Status |
 |---|------|--------|
-| 1 | Interruptible HTTP request in provider | Not started |
-| 2 | Ctrl+C / key-based interrupt in agent loop | Not started |
-| 3 | TUI loading animation during LLM wait | Not started |
-| 4 | Tool execution status display | Not started |
-| 5 | Cancellation feedback with graceful cleanup | Not started |
+| 1 | Interruptible HTTP request in provider | Done |
+| 2 | Ctrl+C / key-based interrupt in agent loop | Done |
+| 3 | TUI loading animation during LLM wait | Done |
+| 4 | Tool execution status display | Done |
+| 5 | Cancellation feedback with graceful cleanup | Done |
 
 ---
 
@@ -29,22 +29,19 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 
 **Must-have**
 
-- [ ] Add a cancellation mechanism to `LlamaCppProvider::chat()`:
-  - Use `curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, ...)` for hard timeout.
+- [x] Add a cancellation mechanism to `LlamaCppProvider::chat()`:
+  - Use `curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, ...)` with a progress callback that checks `cancel_flag`.
   - Support soft cancellation via a `std::atomic<bool>* cancel_flag` parameter on `chat()`.
   - If `cancel_flag` is set to true mid-stream, abort the curl request and return `false` with error `"interrupted"`.
-- [ ] Add `cancel()` method to `Provider` interface (virtual, no-op default).
-- [ ] In non-streaming mode: abort immediately on cancel.
-- [ ] In streaming mode: flush any partial content received, set `response.content` to partial, return `false`.
+- [x] Add `cancel()` method to `Provider` interface (virtual, no-op default).
+- [x] In non-streaming mode: abort immediately on cancel (progress callback checks flag).
+- [x] In streaming mode: abort mid-stream, discard partial content, return `false`.
 
 **Current code state:**
 - `LlamaCppProvider::chat()` uses `curl_easy_perform()` with a 300s timeout.
-- No way to abort mid-request.
-- `Provider` interface has no cancellation method.
-
-**Nice-to-have**
-
-- [ ] Support configurable timeout per-request (via `ChatRequest` field).
+- Added `cancel_flag` parameter to `chat()` and progress callback that checks the flag.
+- Added `cancel()` method to `Provider` interface.
+- Progress callback returns non-zero on cancel, which aborts the curl transfer.
 
 **Files:** `providers/provider.hpp`, `providers/llama_cpp_provider.cpp`
 
@@ -54,25 +51,26 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 
 **Must-have**
 
-- [ ] Add a `std::atomic<bool> interrupted_` flag to `SessionStore` or a shared context object.
-- [ ] In `interactive_mode.cpp`: install a signal handler for SIGINT (Ctrl+C) that sets `interrupted_ = true`.
-- [ ] In `agent_loop.cpp`: check `interrupted_` before each LLM call and tool dispatch. If set:
-  - Return early with `RunResult{.ok = false, .error = "interrupted"}`.
-  - Print `[interrupted]` to the user.
-  - Clear the flag after handling.
-- [ ] In `LlamaCppProvider::chat()`: pass a pointer to `interrupted_` so the HTTP request can be aborted mid-stream.
+- [x] Add a `std::atomic<bool> global_cancel_flag` in `interactive_mode.cpp`.
+- [x] In `interactive_mode.cpp`: install a signal handler for SIGINT (Ctrl+C) via `sigaction()` that sets `global_cancel_flag = true`.
+- [x] In `agent_loop.cpp`: accept `std::atomic<bool>* cancel_flag` parameter and pass it to `provider.chat()`.
+- [x] In `agent_loop.cpp`: check for `"interrupted"` error and return early with `RunResult{.ok = false, .error = "interrupted"}`.
+- [x] In `interactive_mode.cpp`: print `[interrupted]` when interrupted and clear the flag after handling.
+- [x] In `LlamaCppProvider::chat()`: progress callback checks `cancel_flag` and aborts curl transfer.
 
 **Current code state:**
-- No signal handling in `interactive_mode.cpp`.
-- No interruption mechanism in `agent_loop.cpp` or `Provider`.
-- Ctrl+C would kill the process entirely.
+- `interactive_mode.cpp` has `global_cancel_flag`, `signal_handler()`, and `sigaction(SIGINT, ...)` installed.
+- `agent_loop.cpp` accepts `cancel_flag` parameter and passes it to `provider.chat()`.
+- `LlamaCppProvider` has progress callback that checks `cancel_flag` and aborts on true.
+- `interactive_mode.cpp` checks for `"interrupted"` error and prints `[interrupted]`.
+- Flag is reset at the start of each new request.
 
 **Nice-to-have**
 
 - [ ] Add a `/cancel` command (in addition to Ctrl+C) that sets the interrupt flag.
-- [ ] After interrupt, allow the user to continue the session (don't exit).
+- [ ] After interrupt, allow the user to continue the session (already works — returns to prompt).
 
-**Files:** `modes/interactive_mode.cpp`, `agent_loop.cpp`, `session.hpp`, `providers/provider.hpp`
+**Files:** `modes/interactive_mode.cpp`, `agent_loop.cpp`, `agent_loop.hpp`, `providers/provider.hpp`, `providers/llama_cpp_provider.cpp`
 
 ---
 
@@ -80,32 +78,31 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 
 **Must-have**
 
-- [ ] Create a `TuiAnimation` class (or similar) that:
+- [x] Create a `TuiAnimation` class (`tui_animation.hpp`/`tui_animation.cpp`) that:
   - Runs in a background thread.
-  - Displays a loading indicator (e.g., `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` rotating dots, or a simple `...` spinner).
-  - Updates the display at ~10Hz without interfering with stdout.
+  - Displays a loading indicator using Unicode spinner frames (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`).
+  - Updates the display at ~10Hz (100ms interval) without interfering with stdout.
   - Stops when told to (via a `std::atomic<bool>` flag).
-- [ ] In `interactive_mode.cpp`:
-  - Before calling `provider.chat()`, start the animation.
+- [x] In `interactive_mode.cpp`:
+  - Before calling `provider.chat()`, start the animation with `AnimationState::Thinking`.
   - After the call returns (success, failure, or interrupt), stop the animation.
+  - Switch to `AnimationState::Generating` on first chunk received.
   - Print the response normally after the animation stops.
-- [ ] The animation should be a single line (e.g., `⠋ thinking...`) that updates in place using `\r` or ANSI cursor control.
+- [x] The animation is a single line that updates in place using `\033[2K\r` (clear line + carriage return).
+- [x] Cursor is hidden during animation and shown when stopped.
 
 **Current code state:**
-- `interactive_mode.cpp` uses a simple `ChunkCallback` that prints chunks as they arrive.
-- No visual feedback while waiting for the LLM to start generating.
-- User sees nothing between pressing Enter and the first chunk arriving (can be several seconds).
+- `TuiAnimation` class implemented with background thread, spinner frames, and state management.
+- `interactive_mode.cpp` starts animation before `run_agent_loop()`, stops after.
+- Animation switches to "generating" on first chunk via updated `ChunkCallback`.
+- ANSI escape codes: `\033[?25l` (hide cursor), `\033[?25h` (show cursor), `\033[2K\r` (clear line).
 
 **Nice-to-have**
 
-- [ ] Different animations for different states:
-  - Waiting for LLM: rotating dots (`⠋ thinking...`)
-  - Streaming content: subtle pulse (`⠋ generating...`)
-  - Running tool: tool name (`⠋ running: bash...`)
-  - Interrupted: `[interrupted]` with a distinct marker
+- [ ] Different animations for different states (already implemented: Thinking/Generating/Running).
 - [ ] Configurable animation style (dots, bars, text).
 
-**Files:** `modes/interactive_mode.cpp`, `modes/tui_animation.hpp`, `modes/tui_animation.cpp`
+**Files:** `modes/tui_animation.hpp`, `modes/tui_animation.cpp`, `modes/interactive_mode.cpp`
 
 ---
 

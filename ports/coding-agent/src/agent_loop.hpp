@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -24,7 +25,8 @@ RunResult run_agent_loop(
     std::vector<ChatMessage>& history,
     SessionStore& session,
     const std::string& user_input,
-    const ChunkCallback& on_chunk
+    const ChunkCallback& on_chunk,
+    std::atomic<bool>* cancel_flag = nullptr
 );
 
 }  // namespace coding_agent

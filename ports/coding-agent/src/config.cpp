@@ -133,7 +133,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .context_size = 262144,
       .compaction_reserve_tokens = 16384,
       .compaction_keep_recent_tokens = 20000,
-      .max_tool_iterations = 40,
+      .max_tool_iterations = 200,
       .temperature = 0.6f,
       .print_mode = false,
       .stream = true,

@@ -40,6 +40,16 @@ bool is_sse_done(const std::string& json_line) {
   return cleaned == "[DONE]" || cleaned == "\"[DONE]\"";
 }
 
+// Progress callback for cancellation support
+int progress_callback(void* clientp, curl_off_t /*download_total*/, curl_off_t /*download_now*/,
+                      curl_off_t /*upload_total*/, curl_off_t /*upload_now*/) {
+  auto* cancel_flag = static_cast<std::atomic<bool>*>(clientp);
+  if (cancel_flag->load(std::memory_order_acquire)) {
+    return 1;  // Non-zero return aborts the transfer
+  }
+  return 0;
+}
+
 struct StreamState {
   std::string buffer;
   ChatResponse* response;
@@ -47,6 +57,8 @@ struct StreamState {
   std::string error;
   std::vector<size_t> tool_call_fragment_counts;
   bool usage_extracted = false;
+  std::atomic<bool>* cancel_flag = nullptr;
+  CURL* curl_handle = nullptr;  // Store curl handle for cancellation
 };
 
 bool is_valid_json_value(const std::string& raw) {
@@ -132,6 +144,13 @@ void merge_stream_tool_calls(
 size_t write_stream_callback(void* contents, size_t size, size_t nmemb, void* userp) {
   const size_t total_size = size * nmemb;
   auto* state = static_cast<StreamState*>(userp);
+
+  // Check for cancellation before appending data
+  if (state->cancel_flag && state->cancel_flag->load(std::memory_order_relaxed)) {
+    state->error = "interrupted";
+    return 0;  // Return 0 to signal curl to abort
+  }
+
   state->buffer.append(static_cast<char*>(contents), total_size);
 
   size_t line_start = 0;
@@ -245,11 +264,16 @@ json to_json_tool(const ToolDefinition& tool) {
 LlamaCppProvider::LlamaCppProvider(std::string base_url, std::string api_key)
     : base_url_(trim_trailing_slash(base_url)), api_key_(std::move(api_key)) {}
 
+void LlamaCppProvider::cancel() {
+  interrupted_.store(true, std::memory_order_release);
+}
+
 bool LlamaCppProvider::chat(
     const ChatRequest& request,
     ChatResponse& response,
     const ChunkCallback& on_chunk,
-    std::string& error
+    std::string& error,
+    std::atomic<bool>* cancel_flag
 ) {
   CURL* curl = curl_easy_init();
   if (curl == nullptr) {
@@ -294,7 +318,27 @@ bool LlamaCppProvider::chat(
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
   curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, payload_text.size());
 
+  // Set up cancellation via progress callback
+  if (cancel_flag != nullptr) {
+    curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, progress_callback);
+    curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, cancel_flag);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  }
+
+  // Check for pre-existing cancellation before starting
+  if (cancel_flag && cancel_flag->load(std::memory_order_acquire)) {
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    error = "interrupted";
+    return false;
+  }
+
+  // Store curl handle for cancellation
+  active_curl_ = curl;
+  interrupted_.store(false, std::memory_order_release);
+
   StreamState stream_state{.buffer = "", .response = &response, .on_chunk = on_chunk, .error = ""};
+  stream_state.cancel_flag = cancel_flag;
   if (request.stream) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_stream_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &stream_state);
@@ -304,6 +348,9 @@ bool LlamaCppProvider::chat(
   }
 
   const CURLcode result = curl_easy_perform(curl);
+
+  // Clear active curl handle
+  active_curl_ = nullptr;
   long http_status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
 
@@ -311,6 +358,10 @@ bool LlamaCppProvider::chat(
   curl_easy_cleanup(curl);
 
   if (result != CURLE_OK) {
+    if (result == CURLE_ABORTED_BY_CALLBACK) {
+      error = "interrupted";
+      return false;
+    }
     error = std::string("curl request failed: ") + curl_easy_strerror(result);
     return false;
   }

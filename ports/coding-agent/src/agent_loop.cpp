@@ -1,5 +1,6 @@
 #include "agent_loop.hpp"
 
+#include <atomic>
 #include <algorithm>
 #include <sstream>
 
@@ -12,7 +13,8 @@ RunResult run_agent_loop(
     std::vector<ChatMessage>& history,
     SessionStore& session,
     const std::string& user_input,
-    const ChunkCallback& on_chunk
+    const ChunkCallback& on_chunk,
+    std::atomic<bool>* cancel_flag
 ) {
   ChatMessage user{
       .role = "user",
@@ -26,6 +28,9 @@ RunResult run_agent_loop(
   session.append(user, persist_error);
 
   for (int iteration = 0; iteration < config.max_tool_iterations; ++iteration) {
+    // Save history state before this turn for potential rollback on interrupt
+    const size_t history_size_before = history.size();
+
     const std::vector<ToolDefinition> request_tools =
         config.no_tools ? std::vector<ToolDefinition>{} : tools.build_tool_definitions();
     // Tool rounds (especially `edit`) emit large JSON in assistant.tool_calls.arguments.
@@ -47,7 +52,14 @@ RunResult run_agent_loop(
 
     ChatResponse response;
     std::string error;
-    if (!provider.chat(request, response, on_chunk, error)) {
+    if (!provider.chat(request, response, on_chunk, error, cancel_flag)) {
+      if (error == "interrupted") {
+        // Rollback history: remove the user message we just added
+        if (history.size() > history_size_before) {
+          history.pop_back();
+        }
+        return {.ok = false, .output = "", .error = "interrupted"};
+      }
       return {.ok = false, .output = "", .error = error};
     }
 
@@ -121,9 +133,19 @@ RunResult run_agent_loop(
     }
 
     for (const auto& call : response.tool_calls) {
+      // Print tool execution status
+      std::ostringstream tool_status;
+      tool_status << "[tool: " << call.name << "] running...\n";
+      on_chunk(tool_status.str());
+
       const ToolResult result = tools.dispatch(call.name, call.arguments_json, config.cwd);
       std::ostringstream payload;
       payload << (result.ok ? "ok" : "error") << ": " << result.content;
+
+      // Print tool completion status
+      std::ostringstream tool_done;
+      tool_done << "[tool: " << call.name << "] " << (result.ok ? "done" : "failed: " + result.content) << "\n";
+      on_chunk(tool_done.str());
 
       ChatMessage tool_message{
           .role = "tool",

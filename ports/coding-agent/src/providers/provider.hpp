@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <optional>
 #include <string>
@@ -53,8 +54,10 @@ class Provider {
       const ChatRequest& request,
       ChatResponse& response,
       const ChunkCallback& on_chunk,
-      std::string& error
+      std::string& error,
+      std::atomic<bool>* cancel_flag = nullptr
   ) = 0;
+  virtual void cancel() = 0;
 };
 
 }  // namespace coding_agent

@@ -56,6 +56,7 @@ RunResult run_agent_loop(
         .content = response.content,
         .tool_call_id = std::nullopt,
         .tool_calls = response.tool_calls,
+        .usage_tokens = response.completion_tokens,
     };
     assistant.entry_id = session.assign_entry_id();
     history.push_back(assistant);

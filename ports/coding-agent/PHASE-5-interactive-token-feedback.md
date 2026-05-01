@@ -15,7 +15,7 @@ Add real-time token usage tracking and user-facing feedback to the interactive C
 
 | # | Task | Status |
 |---|------|--------|
-| 1 | Token usage tracking in `ChatResponse` | Not started |
+| 1 | Token usage tracking in `ChatResponse` | Done |
 | 2 | Token budget display in interactive mode | Not started |
 | 3 | Per-turn token breakdown (content vs tool calls) | Not started |
 | 4 | Compaction proximity indicator | Not started |

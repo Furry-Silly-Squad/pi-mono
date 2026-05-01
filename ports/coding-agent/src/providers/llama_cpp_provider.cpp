@@ -46,6 +46,7 @@ struct StreamState {
   ChunkCallback on_chunk;
   std::string error;
   std::vector<size_t> tool_call_fragment_counts;
+  bool usage_extracted = false;
 };
 
 bool is_valid_json_value(const std::string& raw) {
@@ -174,6 +175,13 @@ size_t write_stream_callback(void* contents, size_t size, size_t nmemb, void* us
         if (delta.contains("tool_calls")) {
           merge_stream_tool_calls(state, state->response->tool_calls, delta.at("tool_calls"));
         }
+      }
+      // Extract usage from the last chunk (sent in the final SSE event)
+      if (!state->usage_extracted && parsed.contains("usage")) {
+        const auto& usage = parsed.at("usage");
+        state->response->prompt_tokens = usage.value("prompt_tokens", 0);
+        state->response->completion_tokens = usage.value("completion_tokens", 0);
+        state->usage_extracted = true;
       }
     } catch (const std::exception& ex) {
       state->error = ex.what();
@@ -388,6 +396,11 @@ bool LlamaCppProvider::chat(
         return false;
       }
       response.tool_calls = std::move(parsed_tool_calls);
+    }
+    if (parsed.contains("usage")) {
+      const auto& usage = parsed.at("usage");
+      response.prompt_tokens = usage.value("prompt_tokens", 0);
+      response.completion_tokens = usage.value("completion_tokens", 0);
     }
   } catch (const std::exception& ex) {
     error = std::string("Unable to parse llama.cpp response: ") + ex.what();

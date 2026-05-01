@@ -40,6 +40,8 @@ struct ChatRequest {
 struct ChatResponse {
   std::string content;
   std::vector<ToolCall> tool_calls;
+  int prompt_tokens = 0;
+  int completion_tokens = 0;
 };
 
 using ChunkCallback = std::function<void(const std::string&)>;

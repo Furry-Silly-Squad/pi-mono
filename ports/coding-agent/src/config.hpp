@@ -30,6 +30,8 @@ struct Config {
   bool compaction_fail_fast;
   /// When false, skip LLM branch summarization on `--new-session` / cross-session resume.
   bool branch_summary;
+  /// Comma-separated tool names exposed to the model (must match registered tools).
+  std::string initial_active_tools;
 };
 
 std::optional<Config> parse_config(int argc, char** argv, std::string& error);

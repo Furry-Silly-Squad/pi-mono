@@ -44,6 +44,7 @@ AgentSessionConfig make_session_config(const Config& c) {
     cfg.no_context_files           = c.no_context_files;
     cfg.compaction_fail_fast       = c.compaction_fail_fast;
     cfg.auto_compaction            = true;
+    cfg.initial_active_tools       = c.initial_active_tools;
     return cfg;
 }
 

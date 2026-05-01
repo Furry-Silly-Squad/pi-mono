@@ -108,6 +108,7 @@ void print_usage() {
       << "  --no-compaction-fail-fast\n"
       << "                            Skip compaction on failure instead of aborting\n"
       << "  --no-branch-summary       Skip branch summarization when starting a new session or switching sessions\n"
+      << "  --active-tools <csv>      Comma-separated tool names for the model (default: read,bash,edit,write)\n"
       << "  --prompt <text>           Prompt text to send\n"
       << "  --help                    Show this help\n"
       << "\n"
@@ -145,6 +146,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .new_session = false,
       .compaction_fail_fast = true,
       .branch_summary = true,
+      .initial_active_tools = "read,bash,edit,write",
   };
 
   if (const auto settings = load_settings_json(); settings.has_value()) {
@@ -157,6 +159,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     load_optional(settings.value(), "compaction_reserve_tokens", config.compaction_reserve_tokens);
     load_optional(settings.value(), "compaction_keep_recent_tokens", config.compaction_keep_recent_tokens);
     load_optional(settings.value(), "compaction_fail_fast", config.compaction_fail_fast);
+    load_optional(settings.value(), "initial_active_tools", config.initial_active_tools);
   }
 
   config.provider = get_env_or_default("CODING_AGENT_PROVIDER", config.provider);
@@ -287,6 +290,10 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     }
     if (arg == "--no-branch-summary") {
       config.branch_summary = false;
+      continue;
+    }
+    if (arg == "--active-tools" && i + 1 < argc) {
+      config.initial_active_tools = argv[++i];
       continue;
     }
     if (arg == "--prompt" && i + 1 < argc) {

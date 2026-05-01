@@ -163,6 +163,7 @@ Implement `AgentSession` as the canonical runtime unit and remove `agent_loop`.
 - [x] Build `AgentSessionConfig` from `Config`.
 - [x] Create `AgentSession agent(cfg, provider, tools, session)`.
 - [x] Pass `agent` (and `config.prompt` where needed) to mode functions.
+- [x] Map `initial_active_tools` from `Config` (`--active-tools`, `settings.json`) into `AgentSessionConfig`.
 
 ---
 
@@ -204,7 +205,7 @@ New signature: `int run_print_mode(AgentSession& agent, const std::string& promp
 cmake -S ports/coding-agent -B ports/coding-agent/build
 cmake --build ports/coding-agent/build -j
 
-# Tests
+# Tests (includes `coding-agent-agent-session`: AgentSession integration in test/agent_session_test.cpp)
 cd ports/coding-agent/build && ctest --output-on-failure
 
 # Smoke test interactive
@@ -213,6 +214,9 @@ ports/coding-agent/build/coding-agent --base-url http://beugul-desktop:8080
 
 # Print mode
 ports/coding-agent/build/coding-agent --base-url http://beugul-desktop:8080 --prompt "say hi"
+
+# Optional: restrict tools via CLI (matches AgentSession `initial_active_tools`)
+ports/coding-agent/build/coding-agent --base-url http://127.0.0.1:8080 --active-tools read,bash
 ```
 
 ## Acceptance Criteria
@@ -358,7 +362,7 @@ Entirely absent from the port.
 
 | Feature | TypeScript | C++ Port |
 |---------|-----------|----------|
-| args.ts | Comprehensive argument parsing | Partial (config.cpp) |
+| args.ts | Comprehensive argument parsing | Partial (config.cpp; includes `--active-tools` / `initial_active_tools` in settings) |
 | list-models.ts | Model listing | No |
 | session-picker.ts | Session picker | No |
 

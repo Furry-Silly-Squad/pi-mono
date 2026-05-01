@@ -2,7 +2,6 @@
 
 #include <atomic>
 #include <csignal>
-#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -10,223 +9,185 @@
 #include <readline/history.h>
 #include <readline/readline.h>
 
-#include "agent_loop.hpp"
+#include "agent_session.hpp"
 #include "compaction.hpp"
-#include "file_ops.hpp"
 #include "modes/tui_animation.hpp"
 
 namespace coding_agent {
 namespace {
 
-// Global cancel flag for Ctrl+C handling
 static std::atomic<bool> global_cancel_flag = false;
 
 void signal_handler(int /*signum*/) {
-  global_cancel_flag.store(true, std::memory_order_release);
+    global_cancel_flag.store(true, std::memory_order_release);
 }
 
-// ANSI color codes
-const char* COLOR_GREEN = "\033[0;32m";
+const char* COLOR_GREEN  = "\033[0;32m";
 const char* COLOR_YELLOW = "\033[0;33m";
-const char* COLOR_RED = "\033[0;31m";
-const char* COLOR_RESET = "\033[0m";
+const char* COLOR_RED    = "\033[0;31m";
+const char* COLOR_RESET  = "\033[0m";
 
-std::string format_token_budget_status(
-    const std::vector<ChatMessage>& history,
-    int context_size,
-    int reserve_tokens
-) {
-  const int total_tokens = total_context_tokens(history);
-  const int budget = context_size - reserve_tokens;
-  const int remaining = std::max(0, budget - total_tokens);
-  const double pct = budget > 0 ? (static_cast<double>(total_tokens) / budget) * 100.0 : 0.0;
+std::string format_token_budget(const AgentSession& agent) {
+    const auto& cfg    = agent.session_config();
+    const int total    = agent.total_context_tokens();
+    const int budget   = cfg.context_size - cfg.compaction_reserve_tokens;
+    const int remaining = std::max(0, budget - total);
+    const double pct   = budget > 0 ? (static_cast<double>(total) / budget) * 100.0 : 0.0;
 
-  // Color coding: green (<50%), yellow (50-80%), red (>80%)
-  const char* color = COLOR_GREEN;
-  if (pct > 80.0) color = COLOR_RED;
-  else if (pct > 50.0) color = COLOR_YELLOW;
+    const char* color = COLOR_GREEN;
+    if (pct > 80.0) color = COLOR_RED;
+    else if (pct > 50.0) color = COLOR_YELLOW;
 
-  std::ostringstream oss;
-  oss << color << "[" << static_cast<int>(pct) << "%]" << COLOR_RESET;
-  oss << " " << total_tokens << " / " << budget << " tokens";
-
-  if (remaining > 0) {
-    oss << " | compaction in ~" << remaining << " tokens";
-  } else {
-    oss << " | compaction threshold reached";
-  }
-
-  return oss.str();
+    std::ostringstream oss;
+    oss << color << "[" << static_cast<int>(pct) << "%]" << COLOR_RESET
+        << " " << total << " / " << budget << " tokens"
+        << " | compaction in ~" << remaining << " tokens";
+    return oss.str();
 }
 
-bool should_warn_compaction(
-    const std::vector<ChatMessage>& history,
-    int context_size,
-    int reserve_tokens
-) {
-  const int total_tokens = total_context_tokens(history);
-  const int budget = context_size - reserve_tokens;
-  const int remaining = budget - total_tokens;
-  // Warn if within 10% of budget (remaining < 10% of budget)
-  return remaining < (budget * 0.1);
+bool near_compaction_threshold(const AgentSession& agent) {
+    const auto& cfg  = agent.session_config();
+    const int total  = agent.total_context_tokens();
+    const int budget = cfg.context_size - cfg.compaction_reserve_tokens;
+    return (budget - total) < (budget / 10);
 }
 
 }  // namespace
 
-int run_interactive_mode(
-    const Config& config,
-    Provider& provider,
-    ToolRegistry& tools,
-    std::vector<ChatMessage>& history,
-    SessionStore& session
-) {
-  // Set up signal handler for Ctrl+C
-  struct sigaction sa;
-  sa.sa_handler = signal_handler;
-  sigemptyset(&sa.sa_mask);
-  sa.sa_flags = 0;
-  sigaction(SIGINT, &sa, nullptr);
+int run_interactive_mode(AgentSession& agent) {
+    struct sigaction sa{};
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, nullptr);
 
-  global_cancel_flag.store(false, std::memory_order_release);
-
-  while (true) {
-    char* line = readline("> ");
-    if (line == nullptr) {
-      std::cout << "\n";
-      return 0;
-    }
-
-    std::string prompt(line);
-    free(line);
-    if (prompt.empty()) {
-      continue;
-    }
-    if (prompt == "/exit" || prompt == "/quit") {
-      return 0;
-    }
-    if (prompt == "/clear") {
-      history.clear();
-      std::cout << "History cleared.\n";
-      continue;
-    }
-    if (prompt == "/stats" || prompt == "/session") {
-      std::cout << "\n=== Session Stats ===\n";
-      std::cout << "Session ID: " << session.get_session_id() << "\n";
-      std::cout << "Messages: " << history.size() << "\n";
-      const int total_tokens = total_context_tokens(history);
-      const int budget = config.context_size - config.compaction_reserve_tokens;
-      std::cout << "Tokens: " << total_tokens << " / " << budget << " ("
-                << (budget > 0 ? std::to_string(static_cast<int>(
-                                     (static_cast<double>(total_tokens) / budget) * 100.0))
-                                + "%"
-                                : "N/A")
-                << ")\n";
-      const int remaining = std::max(0, budget - total_tokens);
-      std::cout << "Compaction in ~" << remaining << " tokens\n";
-      std::cout << "Compactions: " << session.get_compaction_count() << "\n";
-      if (session.get_compaction_count() > 0) {
-        const auto& last = session.get_last_compaction_event();
-        std::cout << "Last compaction: " << last.tokens_before << " -> " << last.tokens_after << " tokens\n";
-      }
-      std::cout << "Context size: " << config.context_size << "\n";
-      std::cout << "Reserve tokens: " << config.compaction_reserve_tokens << "\n";
-      std::cout << "Keep recent tokens: " << config.compaction_keep_recent_tokens << "\n";
-      std::cout << "\nCommands: /compact, /clear, /stats, /tokens, /exit\n";
-      std::cout << "=====================\n\n";
-      continue;
-    }
-    if (prompt == "/tokens") {
-      std::cout << "\nTokens: " << total_context_tokens(history) << " / "
-                << (config.context_size - config.compaction_reserve_tokens) << "\n";
-      std::cout << "=====================\n\n";
-      continue;
-    }
-    if (prompt == "/compact") {
-      std::cout << "\n[COMPACT] manually triggering compaction...\n";
-      CompactionStats compaction_stats;
-      std::string compact_error;
-      if (!compact_history(
-              history,
-              provider,
-              config.model,
-              config.compaction_keep_recent_tokens,
-              config.compaction_reserve_tokens,
-              &session.get_last_compaction_file_ops(),
-              &compaction_stats,
-              compact_error
-          )) {
-        std::cerr << "Compaction failed: " << compact_error << "\n";
-      } else if (compaction_stats.did_compact) {
-        std::cout << "[COMPACT] " << compaction_stats.tokens_before << " -> "
-                  << compaction_stats.tokens_after << " tokens\n";
-        std::string persist_error;
-        CompactionEvent event{
-            .tokens_before = compaction_stats.tokens_before,
-            .tokens_after = compaction_stats.tokens_after,
-            .first_kept_index = -1,
-            .first_kept_entry_id = compaction_stats.first_kept_entry_id,
-            .summary = compaction_stats.summary,
-            .read_files = sorted_file_list(compaction_stats.file_ops.read_files),
-            .modified_files = sorted_file_list(compaction_stats.file_ops.modified_files),
-        };
-        session.append_compaction(event, persist_error);
-        session.record_compaction(event);
-      } else {
-        std::cout << "[COMPACT] no compaction needed (history already within budget)\n";
-      }
-      std::cout << format_token_budget_status(history, config.context_size, config.compaction_reserve_tokens)
-                << "\n";
-      continue;
-    }
-
-    // Reset cancel flag for new request
     global_cancel_flag.store(false, std::memory_order_release);
 
-    // Start TUI animation while waiting for LLM
-    TuiAnimation animation;
-    animation.start(AnimationState::Thinking, "");
+    const auto& cfg = agent.session_config();
 
-    add_history(prompt.c_str());
-    const RunResult result = run_agent_loop(
-        config,
-        provider,
-        tools,
-        history,
-        session,
-        prompt,
-        [&animation](const std::string& chunk) {
-          animation.on_first_stream_chunk();
-          animation.update(AnimationState::Generating, "");
-          std::cout << chunk << std::flush;
-        },
-        &global_cancel_flag,
-        [&animation]() { animation.resume_for_next_model_turn(); }
-    );
+    while (true) {
+        char* line = readline("> ");
+        if (line == nullptr) {
+            std::cout << "\n";
+            return 0;
+        }
 
-    // Stop TUI animation
-    animation.stop();
+        std::string prompt(line);
+        free(line);
 
-    // Print compaction proximity warning if needed
-    if (should_warn_compaction(history, config.context_size, config.compaction_reserve_tokens)) {
-      std::cout << "\n[WARN] compaction in ~"
-                << (config.context_size - config.compaction_reserve_tokens) - total_context_tokens(history)
-                << " tokens\n";
+        if (prompt.empty()) continue;
+
+        if (prompt == "/exit" || prompt == "/quit") {
+            return 0;
+        }
+
+        if (prompt == "/clear") {
+            std::cout << "Note: /clear is not supported with AgentSession (history is managed internally).\n";
+            continue;
+        }
+
+        if (prompt == "/stats" || prompt == "/session") {
+            const int total  = agent.total_context_tokens();
+            const int budget = cfg.context_size - cfg.compaction_reserve_tokens;
+            const int pct    = budget > 0
+                ? static_cast<int>((static_cast<double>(total) / budget) * 100.0)
+                : 0;
+
+            std::cout << "\n=== Session Stats ===\n"
+                      << "Session ID:       " << agent.session_id() << "\n"
+                      << "Messages:         " << agent.message_count() << "\n"
+                      << "Tokens:           " << total << " / " << budget
+                      << " (" << pct << "%)\n"
+                      << "Compaction in ~  " << std::max(0, budget - total) << " tokens\n"
+                      << "Compactions:      " << agent.compaction_count() << "\n";
+            if (agent.compaction_count() > 0) {
+                const auto& s = agent.last_compaction_stats();
+                std::cout << "Last compaction:  " << s.tokens_before
+                          << " -> " << s.tokens_after << " tokens\n";
+            }
+            std::cout << "Context size:     " << cfg.context_size << "\n"
+                      << "Reserve tokens:   " << cfg.compaction_reserve_tokens << "\n"
+                      << "Keep recent:      " << cfg.compaction_keep_recent_tokens << "\n"
+                      << "Model:            " << agent.model() << "\n"
+                      << "Thinking level:   " << thinking_level_to_string(agent.thinking_level()) << "\n"
+                      << "\nCommands: /compact, /stats, /tokens, /thinking, /exit\n"
+                      << "=====================\n\n";
+            continue;
+        }
+
+        if (prompt == "/tokens") {
+            const int total  = agent.total_context_tokens();
+            const int budget = cfg.context_size - cfg.compaction_reserve_tokens;
+            std::cout << "\nTokens: " << total << " / " << budget << "\n"
+                      << "=====================\n\n";
+            continue;
+        }
+
+        if (prompt == "/compact") {
+            std::cout << "\n[COMPACT] manually triggering compaction...\n";
+            if (agent.compact()) {
+                const auto& s = agent.last_compaction_stats();
+                std::cout << "[COMPACT] " << s.tokens_before << " -> " << s.tokens_after << " tokens\n";
+            } else {
+                std::cout << "[COMPACT] no compaction needed (history already within budget)\n";
+            }
+            std::cout << format_token_budget(agent) << "\n";
+            continue;
+        }
+
+        if (prompt == "/thinking") {
+            agent.cycle_thinking_level();
+            std::cout << "Thinking level: " << thinking_level_to_string(agent.thinking_level()) << "\n";
+            continue;
+        }
+
+        // Reset cancel flag for each new user turn.
+        global_cancel_flag.store(false, std::memory_order_release);
+
+        TuiAnimation animation;
+
+        // Drive between-tool-round animation via event handler.
+        agent.set_event_handler([&animation](const AgentEvent& ev) {
+            if (ev.type == AgentEvent::Type::ModelCallStart) {
+                animation.resume_for_next_model_turn();
+            }
+        });
+
+        animation.start(AnimationState::Thinking, "");
+
+        add_history(prompt.c_str());
+
+        const bool ok = agent.run(
+            prompt,
+            [&animation](const std::string& chunk) {
+                animation.on_first_stream_chunk();
+                animation.update(AnimationState::Generating, "");
+                std::cout << chunk << std::flush;
+            },
+            &global_cancel_flag
+        );
+
+        animation.stop();
+
+        if (near_compaction_threshold(agent)) {
+            const int budget = cfg.context_size - cfg.compaction_reserve_tokens;
+            std::cout << "\n[WARN] compaction in ~"
+                      << (budget - agent.total_context_tokens()) << " tokens\n";
+        }
+
+        if (!ok) {
+            // Distinguish interrupt from error: run() returns false on both.
+            // The cancel flag tells us it was an interrupt.
+            if (global_cancel_flag.load()) {
+                std::cout << "\n[interrupted]\n";
+            } else {
+                std::cerr << "\nError: agent run failed\n";
+            }
+        } else {
+            std::cout << "\n[done]\n";
+        }
+
+        std::cout << format_token_budget(agent) << "\n";
     }
-
-    if (!result.ok) {
-      if (result.error == "interrupted") {
-        std::cout << "\n[interrupted]\n";
-      } else {
-        std::cerr << "\nError: " << result.error << "\n";
-      }
-    } else {
-      std::cout << "\n[done]\n";
-    }
-
-    // Print token budget status line after each response
-    std::cout << format_token_budget_status(history, config.context_size, config.compaction_reserve_tokens)
-              << "\n";
-  }
 }
 
 }  // namespace coding_agent

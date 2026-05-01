@@ -26,6 +26,7 @@ enum class ThinkingLevel {
     Low,
     Medium,
     High,
+    XHigh,
 };
 
 const char* thinking_level_to_string(ThinkingLevel level);
@@ -39,6 +40,7 @@ struct AgentEvent {
     enum class Type {
         TurnStart,
         TurnEnd,
+        ModelCallStart,
         ToolCall,
         ToolResult,
         ModelChange,
@@ -229,6 +231,9 @@ class AgentSession {
     // Session Info
     // ====================================================================
 
+    /// Read-only access to session configuration.
+    const AgentSessionConfig& session_config() const;
+
     /// Get current session ID.
     std::string session_id() const;
 
@@ -259,6 +264,8 @@ class AgentSession {
 
     bool execute_tools(const std::vector<ToolCall>& tool_calls,
                        const ChunkCallback& on_chunk);
+
+    std::vector<ToolDefinition> active_tool_definitions() const;
 
     bool check_and_compact(const ChunkCallback& on_chunk);
 

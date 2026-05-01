@@ -1,19 +1,11 @@
 #pragma once
 
-#include "agent_loop.hpp"
-#include "config.hpp"
-#include "providers/provider.hpp"
-#include "session.hpp"
-#include "tools/tool_registry.hpp"
+#include <string>
+
+#include "agent_session.hpp"
 
 namespace coding_agent {
 
-int run_print_mode(
-    const Config& config,
-    Provider& provider,
-    ToolRegistry& tools,
-    std::vector<ChatMessage>& history,
-    SessionStore& session
-);
+int run_print_mode(AgentSession& agent, const std::string& prompt);
 
 }  // namespace coding_agent

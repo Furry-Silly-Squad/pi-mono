@@ -10,16 +10,35 @@ Improve compaction quality and determinism without changing session model archit
 
 ---
 
+## Task Status Summary
+
+| # | Task | Status |
+|---|------|--------|
+| 1 | Add stable entry IDs to session rows | Partial |
+| 2 | Replace `first_kept_index` with `first_kept_entry_id` | Partial |
+| 3 | Iterative boundary detection using prior compaction ID | Not started |
+| 4 | Structured summary prompt | Not started |
+| 5 | Iterative summary update prompt | Not started |
+| 6 | Usage-aware token estimation | Partial |
+
+---
+
 ## Tasks
 
 ### 1. Add stable entry IDs to session rows
 
 **Must-have**
 
-- [ ] Add a `session_entry_id` field to the `ChatMessage` struct (or parallel `entry_id` on persisted rows).
-- [ ] On append, generate a monotonic ID per row (millisecond timestamp + counter suffix to avoid collisions within the same ms).
-- [ ] Persist `id` field in every `message`, `compaction`, and `branch_summary` JSONL row.
+- [x] Add a `session_entry_id` field to the `ChatMessage` struct (`std::optional<std::string> entry_id`).
+- [x] On append, generate a monotonic ID per row (millisecond timestamp + counter suffix to avoid collisions within the same ms).
+- [x] Persist `id` field in every `message` JSONL row (written when `entry_id.has_value()`).
 - [ ] Reload: populate `entry_id` from loaded rows; fall back to positional index for legacy rows without IDs.
+
+**Current code state:**
+- `ChatMessage` in `providers/provider.hpp` has `std::optional<std::string> entry_id`.
+- `SessionStore::assign_entry_id()` in `session.cpp` generates IDs via `generate_entry_id()` (timestamp + monotonic counter).
+- `SessionStore::append()` writes `"id"` to JSONL when `message.entry_id.has_value()`.
+- `SessionStore::load_messages()` does **not** populate `entry_id` on loaded messages. The `message_entry_ids_` vector and `compaction_first_kept_entry_ids_` vector are declared but never populated during load.
 
 **Files:** `session.hpp`, `session.cpp`
 
@@ -30,11 +49,18 @@ Improve compaction quality and determinism without changing session model archit
 **Must-have**
 
 - [ ] `CompactionStats` struct: replace `int first_kept_index` with `std::string first_kept_entry_id`.
+- [x] `CompactionEvent` struct has both `int first_kept_index` and `std::optional<std::string> first_kept_entry_id`.
 - [ ] `compact_history()`: after determining cut position, store the entry ID of the first kept message into stats.
 - [ ] `append_compaction()`: persist `first_kept_entry_id` in the JSONL row (drop index).
 - [ ] `load_messages()`: when reloading a compaction row, store `first_kept_entry_id` in an in-memory map for future compaction boundary detection.
 
-**Files:** `compaction.hpp`, `compaction.cpp`, `session.hpp`, `session.cpp`
+**Current code state:**
+- `CompactionStats` in `compaction.hpp` still uses `int first_kept_index = -1` (no `first_kept_entry_id` field).
+- `CompactionEvent` in `session.hpp` has both fields, but `agent_loop.cpp` only sets `first_kept_index` when calling `append_compaction()`.
+- `append_compaction()` writes both `first_kept_index` and `first_kept_entry_id` to JSONL (conditional), but `first_kept_entry_id` is never populated.
+- `load_messages()` does not extract `first_kept_entry_id` from compaction rows.
+
+**Files:** `compaction.hpp`, `compaction.cpp`, `session.hpp`, `session.cpp`, `agent_loop.cpp`
 
 ---
 
@@ -45,6 +71,11 @@ Improve compaction quality and determinism without changing session model archit
 - [ ] In `compact_history()`, before computing cut: scan history for the most recent compaction context message and extract its `first_kept_entry_id`.
 - [ ] Use that ID as `boundary_start` so compaction only summarizes the window after the previous compaction (not the full history).
 - [ ] If no prior compaction is found, start from message index 1 (after system prompt) as today.
+
+**Current code state:**
+- `compact_history()` calls `find_first_kept_index()` which works purely on positional indices, scanning from the end of the message vector.
+- No awareness of prior compaction boundaries. Every compaction summarizes from message index 1 through `first_kept_index`, meaning the second compaction re-summarizes the first compaction's summary.
+- `SessionStore::get_last_compaction_first_kept_entry_id()` exists but is never called.
 
 **Files:** `compaction.cpp`, `session.hpp`
 
@@ -68,6 +99,10 @@ Improve compaction quality and determinism without changing session model archit
   ```
 - [ ] Store prompt string as a named constant in `compaction.cpp`.
 
+**Current code state:**
+- Prompt is inline in `compact_history()`: `"Summarize the conversation with key decisions, files changed, and pending work."`
+- No structured template, no named constant.
+
 **Nice-to-have**
 
 - [ ] Add a system prompt preamble string for the summarization call (`SUMMARIZATION_SYSTEM_PROMPT` equivalent).
@@ -84,6 +119,11 @@ Improve compaction quality and determinism without changing session model archit
 - [ ] In `compact_history()`: if a prior compaction summary exists in history (loaded from JSONL), pass it as `previous_summary` and use the update prompt.
 - [ ] Otherwise use the initial prompt.
 
+**Current code state:**
+- No update prompt variant exists.
+- No `previous_summary` field in `CompactionStats`.
+- `compact_history()` always generates a fresh summary without reference to prior compaction summaries.
+
 **Nice-to-have**
 
 - [ ] Expose `previous_summary` field in `CompactionStats` for logging/debug.
@@ -96,9 +136,15 @@ Improve compaction quality and determinism without changing session model archit
 
 **Nice-to-have**
 
-- [ ] Add optional `usage_tokens` field to `ChatResponse` (reported by provider if available).
+- [x] Add optional `usage_tokens` field to `ChatMessage` (reported by provider if available).
 - [ ] In `total_context_tokens()`: if any assistant message carries a valid usage count, use it as the base for the most recent turn and estimate-only for trailing messages after that.
 - [ ] Fall back to current `chars/4` heuristic when no usage data is present.
+
+**Current code state:**
+- `ChatMessage` in `providers/provider.hpp` has `int usage_tokens = 0`.
+- `SessionStore::append()` persists `usage_tokens` to JSONL when `> 0`.
+- `total_context_tokens()` in `compaction.cpp` does **not** use `usage_tokens` -- it uses `approx_tokens()` (chars/4) for all messages.
+- `ChatResponse` does not carry a token count field (only `content` and `tool_calls`).
 
 **Files:** `providers/provider.hpp`, `providers/llama_cpp_provider.cpp`, `compaction.hpp`, `compaction.cpp`
 

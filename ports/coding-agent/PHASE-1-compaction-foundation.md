@@ -17,7 +17,7 @@ Improve compaction quality and determinism without changing session model archit
 | 1 | Add stable entry IDs to session rows | Partial |
 | 2 | Replace `first_kept_index` with `first_kept_entry_id` | Partial |
 | 3 | Iterative boundary detection using prior compaction ID | Not started |
-| 4 | Structured summary prompt | Not started |
+| 4 | Structured summary prompt | Done |
 | 5 | Iterative summary update prompt | Not started |
 | 6 | Usage-aware token estimation | Partial |
 

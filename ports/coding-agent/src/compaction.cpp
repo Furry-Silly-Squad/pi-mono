@@ -102,10 +102,20 @@ bool compact_history(
       .temperature = 0.1f,
       .stream = false,
   };
+  const std::string summary_user_prompt = R"(## Goal
+## Constraints & Preferences
+## Progress
+### Done
+### In Progress
+### Blocked
+## Key Decisions
+## Next Steps
+## Critical Context)";
+
   request.messages.push_back(
       ChatMessage{
           .role = "user",
-          .content = "Summarize the conversation with key decisions, files changed, and pending work.",
+          .content = summary_user_prompt,
           .tool_call_id = std::nullopt,
           .tool_calls = {},
       }

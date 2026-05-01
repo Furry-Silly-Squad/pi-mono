@@ -116,8 +116,6 @@ void merge_stream_tool_calls(
       if (fn.contains("name") && fn.at("name").is_string()) {
         const std::string name_fragment = fn.at("name").get<std::string>();
         call.name += name_fragment;
-        std::cerr << "[debug][tool-stream] index=" << index << " id=" << call.id
-                  << " name_fragment=" << name_fragment << "\n";
       }
       if (fn.contains("arguments") && fn.at("arguments").is_string()) {
         const std::string arguments_fragment = fn.at("arguments").get<std::string>();
@@ -125,9 +123,6 @@ void merge_stream_tool_calls(
         if (state != nullptr) {
           ++state->tool_call_fragment_counts[index];
         }
-        std::cerr << "[debug][tool-stream] index=" << index << " id=" << call.id
-                  << " arguments_fragment_size=" << arguments_fragment.size()
-                  << " total_arguments_size=" << call.arguments_json.size() << "\n";
       }
     }
   }

@@ -16,10 +16,10 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 | # | Task | Status |
 |---|------|--------|
 | 1 | Interruptible HTTP request in provider | Done |
-| 2 | Ctrl+C / key-based interrupt in agent loop | Done |
+| 2 | Ctrl+C / cooperative cancel in agent loop | Done (interactive TUI only; see notes) |
 | 3 | TUI loading animation during LLM wait | Done |
-| 4 | Tool execution status display | Done |
-| 5 | Cancellation feedback with graceful cleanup | Done |
+| 4 | Tool execution status display | Partial (basic lines; no duration, no slow-tool spinner, no in-place `\r`) |
+| 5 | Cancellation feedback with graceful cleanup | Partial (LLM + UI; tools not cooperatively cancelled; session vs history caveats) |
 
 ---
 
@@ -29,19 +29,11 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 
 **Must-have**
 
-- [x] Add a cancellation mechanism to `LlamaCppProvider::chat()`:
-  - Use `curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, ...)` with a progress callback that checks `cancel_flag`.
-  - Support soft cancellation via a `std::atomic<bool>* cancel_flag` parameter on `chat()`.
-  - If `cancel_flag` is set to true mid-stream, abort the curl request and return `false` with error `"interrupted"`.
-- [x] Add `cancel()` method to `Provider` interface (virtual, no-op default).
-- [x] In non-streaming mode: abort immediately on cancel (progress callback checks flag).
-- [x] In streaming mode: abort mid-stream, discard partial content, return `false`.
-
-**Current code state:**
-- `LlamaCppProvider::chat()` uses `curl_easy_perform()` with a 300s timeout.
-- Added `cancel_flag` parameter to `chat()` and progress callback that checks the flag.
-- Added `cancel()` method to `Provider` interface.
-- Progress callback returns non-zero on cancel, which aborts the curl transfer.
+- [x] Cancellation via `std::atomic<bool>* cancel_flag` passed to `LlamaCppProvider::chat()`:
+  - `CURLOPT_NOPROGRESS` / `CURLOPT_PROGRESSFUNCTION` invokes `progress_callback`, which reads `cancel_flag` and returns non-zero to abort the transfer (`CURLE_ABORTED_BY_CALLBACK` → error `"interrupted"`).
+  - Streaming path: `write_stream_callback` checks `cancel_flag` before processing chunks; sets internal error and returns 0 to abort.
+- [x] `Provider` is abstract with `virtual void cancel() = 0`; `LlamaCppProvider` implements `cancel()` (sets internal `interrupted_`; **not** wired into the active transfer today — cooperative abort uses `cancel_flag`, not `cancel()` alone).
+- [x] Non-streaming and streaming both abort when `cancel_flag` becomes true mid-request.
 
 **Files:** `providers/provider.hpp`, `providers/llama_cpp_provider.cpp`
 
@@ -51,24 +43,20 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 
 **Must-have**
 
-- [x] Add a `std::atomic<bool> global_cancel_flag` in `interactive_mode.cpp`.
-- [x] In `interactive_mode.cpp`: install a signal handler for SIGINT (Ctrl+C) via `sigaction()` that sets `global_cancel_flag = true`.
-- [x] In `agent_loop.cpp`: accept `std::atomic<bool>* cancel_flag` parameter and pass it to `provider.chat()`.
-- [x] In `agent_loop.cpp`: check for `"interrupted"` error and return early with `RunResult{.ok = false, .error = "interrupted"}`.
-- [x] In `interactive_mode.cpp`: print `[interrupted]` when interrupted and clear the flag after handling.
-- [x] In `LlamaCppProvider::chat()`: progress callback checks `cancel_flag` and aborts curl transfer.
+- [x] `std::atomic<bool> global_cancel_flag` in `interactive_mode.cpp`.
+- [x] `sigaction(SIGINT, ...)` sets `global_cancel_flag = true` (does not exit the process).
+- [x] `run_agent_loop(..., &global_cancel_flag, ...)` passes the pointer into `provider.chat(..., cancel_flag)`.
+- [x] On `error == "interrupted"`, returns `RunResult{.ok = false, .error = "interrupted"}`.
+- [x] Interactive mode prints `\n[interrupted]\n` on that result and resets `global_cancel_flag` at the **start** of each new prompt turn.
 
-**Current code state:**
-- `interactive_mode.cpp` has `global_cancel_flag`, `signal_handler()`, and `sigaction(SIGINT, ...)` installed.
-- `agent_loop.cpp` accepts `cancel_flag` parameter and passes it to `provider.chat()`.
-- `LlamaCppProvider` has progress callback that checks `cancel_flag` and aborts on true.
-- `interactive_mode.cpp` checks for `"interrupted"` error and prints `[interrupted]`.
-- Flag is reset at the start of each new request.
+**Scope**
+
+- [x] **`run_print_mode`** calls `run_agent_loop` **without** `cancel_flag` (defaults to `nullptr`), so `--prompt` / piped stdin runs have **no** cooperative cancellation path — SIGINT keeps default process behavior unless changed elsewhere.
 
 **Nice-to-have**
 
-- [ ] Add a `/cancel` command (in addition to Ctrl+C) that sets the interrupt flag.
-- [ ] After interrupt, allow the user to continue the session (already works — returns to prompt).
+- [ ] `/cancel` command (only Ctrl+C today).
+- [x] After interrupt, user stays in the REPL and can enter a new prompt.
 
 **Files:** `modes/interactive_mode.cpp`, `agent_loop.cpp`, `agent_loop.hpp`, `providers/provider.hpp`, `providers/llama_cpp_provider.cpp`
 
@@ -78,29 +66,17 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 
 **Must-have**
 
-- [x] Create a `TuiAnimation` class (`tui_animation.hpp`/`tui_animation.cpp`) that:
-  - Runs in a background thread.
-  - Displays a loading indicator using Unicode spinner frames (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`).
-  - Updates the display at ~10Hz (100ms interval) without interfering with stdout.
-  - Stops when told to (via a `std::atomic<bool>` flag).
-- [x] In `interactive_mode.cpp`:
-  - Before calling `provider.chat()`, start the animation with `AnimationState::Thinking`.
-  - After the call returns (success, failure, or interrupt), stop the animation.
-  - Switch to `AnimationState::Generating` on first chunk received.
-  - Print the response normally after the animation stops.
-- [x] The animation is a single line that updates in place using `\033[2K\r` (clear line + carriage return).
-- [x] Cursor is hidden during animation and shown when stopped.
-
-**Current code state:**
-- `TuiAnimation` class implemented with background thread, spinner frames, and state management.
-- `interactive_mode.cpp` starts animation before `run_agent_loop()`, stops after.
-- Animation switches to "generating" on first chunk via updated `ChunkCallback`.
-- ANSI escape codes: `\033[?25l` (hide cursor), `\033[?25h` (show cursor), `\033[2K\r` (clear line).
+- [x] `TuiAnimation` (`modes/tui_animation.hpp`, `modes/tui_animation.cpp`): background thread, Unicode spinner frames (`⠋` … `⠏`), ~100 ms tick, stops via atomic flag.
+- [x] Interactive mode: `start(AnimationState::Thinking)` before `run_agent_loop`, `stop()` after return.
+- [x] First stream chunk: `on_first_stream_chunk()` ends the spinner line; chunk callback switches to `AnimationState::Generating` and forwards chunks to stdout.
+- [x] Between tool rounds, `on_before_model_turn` calls `resume_for_next_model_turn()` so the spinner can show again for the next model call.
+- [x] ANSI: hide/show cursor, `CLEAR_LINE` + `\r` for the spinner line.
 
 **Nice-to-have**
 
-- [ ] Different animations for different states (already implemented: Thinking/Generating/Running).
-- [ ] Configurable animation style (dots, bars, text).
+- [x] Multiple `AnimationState` values exist (`Thinking`, `Generating`, `Running`, `Idle`).
+- [ ] Configurable animation style.
+- [ ] **`Running`** is not used for blocking tool execution (tools print plain `[tool: …]` lines instead).
 
 **Files:** `modes/tui_animation.hpp`, `modes/tui_animation.cpp`, `modes/interactive_mode.cpp`
 
@@ -108,25 +84,16 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 
 ### 4. Tool execution status display
 
-**Must-have**
+**Implemented today**
 
-- [ ] Before each tool dispatch, print a status line:
-  - `[tool: <name>] running...`
-- [ ] After tool completes, print:
-  - `[tool: <name>] done (<duration>ms)` or `[tool: <name>] failed: <error>`
-- [ ] Use `\r` to update in place (same line), so it doesn't break the output flow.
-- [ ] If the tool runs for >5 seconds, switch to a spinning indicator:
-  - `[tool: <name>] ⠋ running...` (updates every 100ms)
+- [x] Before each `tools.dispatch`: one line via `on_chunk`, e.g. `[tool: <name>] <human-readable summary>` (`describe_tool_call` for edit/bash/read/…).
+- [x] After dispatch: `[tool: <name>] done` or `[tool: <name>] failed: …`.
 
-**Current code state:**
-- Tool results are printed inline as `ok/error: <content>` in the chat history.
-- No visual feedback during tool execution.
-- Long-running tools (e.g., `bash` with a slow command) give no indication they're still running.
+**Not implemented (still open vs original checklist)**
 
-**Nice-to-have**
-
-- [ ] Show estimated remaining time for tools that report progress.
-- [ ] Allow user to interrupt a running tool (via Ctrl+C, which sets the interrupt flag).
+- [ ] In-place `\r` updates on a single line.
+- [ ] Duration in milliseconds.
+- [ ] Spinner for tools running longer than 5 seconds.
 
 **Files:** `agent_loop.cpp`
 
@@ -134,32 +101,24 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 
 ### 5. Cancellation feedback with graceful cleanup
 
-**Must-have**
+**Implemented**
 
-- [ ] When the user interrupts:
-  - Stop any in-progress LLM request (via `curl_easy_pause` or closing the connection).
-  - Stop any in-progress tool execution (send SIGINT to child processes if applicable).
-  - Stop the TUI animation.
-  - Print a clear status message: `[interrupted] operation cancelled`.
-  - Return to the prompt (don't exit).
-- [ ] Preserve the partial state:
-  - If the LLM was mid-response, discard the partial response (don't add it to history).
-  - If a tool was mid-execution, discard its partial output.
-  - History up to the last complete turn is preserved.
-- [ ] After interrupt, the user can issue a new prompt and continue the session normally.
+- [x] In-flight LLM HTTP request aborted via `cancel_flag` (curl progress / stream write path).
+- [x] TUI animation stopped in interactive mode (`animation.stop()` after `run_agent_loop` returns).
+- [x] Interactive message on interrupt: **`[interrupted]`** (not the phrase `operation cancelled`).
+- [x] Process returns to the `readline` prompt after interrupt.
+- [x] Partial **assistant** reply is **not** appended to `history` or session when `chat()` fails with `"interrupted"` (no `session.append` for assistant). User may have already seen streamed tokens on the terminal.
 
-**Current code state:**
-- No graceful interruption.
-- No cleanup on abort.
-- History is not rolled back on partial responses.
+**Gaps / caveats**
+
+- [ ] **Tools:** `cancel_flag` is **not** consulted during `tools.dispatch()` or inside tools (e.g. `bash` uses `popen` — no cooperative cancel; Ctrl+C during a long shell command does not match the “interrupt tool” story).
+- [ ] **Session file:** The **user** message is appended with `session.append(user)` **before** the first `chat()`. On interrupt, that row remains in the JSONL even though the turn did not complete (no assistant row). The in-loop comment about “rollback” removing the user message does not actually run on interrupt: `history_size_before` equals `history.size()` at the start of each model iteration, so the `pop_back` guard never fires for a failed `chat()`.
+- [ ] **`Provider::cancel()`** on `LlamaCppProvider` does not currently drive abort (only `cancel_flag` does).
 
 **Nice-to-have**
 
-- [ ] After interrupt, offer the user options:
-  - Continue with a new prompt (default)
-  - Retry the interrupted turn
-  - Exit the session
-- [ ] Log interrupted operations for debugging.
+- [ ] Retry / exit prompts after interrupt.
+- [ ] Debug logging of interrupted operations.
 
 **Files:** `modes/interactive_mode.cpp`, `agent_loop.cpp`, `providers/llama_cpp_provider.cpp`
 
@@ -172,35 +131,29 @@ Allow the user to interrupt long-running agent operations (LLM responses, tool e
 cmake -S ports/coding-agent -B ports/coding-agent/build
 cmake --build ports/coding-agent/build -j
 
-# Manual scenario 1: interrupt during LLM response
-ports/coding-agent/build/coding-agent --base-url http://... --prompt "write a very long essay"
-# → While waiting for response, see animation: "⠋ thinking..."
-# → While streaming, see: "⠋ generating..."
-# → Press Ctrl+C during streaming
-# → See: "[interrupted] operation cancelled"
-# → Return to prompt, session continues
+# Manual scenario 1: interrupt during LLM response (interactive)
+ports/coding-agent/build/coding-agent --base-url http://...
+# → While waiting: spinner + "thinking"; after first chunk, streaming text
+# → Ctrl+C during request
+# → See: "[interrupted]" and return to "> " prompt
 
 # Manual scenario 2: interrupt during tool execution
-ports/coding-agent/build/coding-agent --base-url http://... --prompt "run a slow bash command"
-# → See: "[tool: bash] ⠋ running..."
-# → Press Ctrl+C while tool is running
-# → See: "[interrupted] operation cancelled"
-# → Return to prompt, session continues
+# → Expect basic "[tool: bash] …" / done lines only
+# → Long bash: no spinner; Ctrl+C does not integrate with tool dispatch (process/signal behavior is OS-dependent)
 
-# Manual scenario 3: normal operation (no interrupt)
-# → Animation starts, response arrives, animation stops
-# → Response displayed normally
-# → No visual artifacts
+# Manual scenario 3: print mode (non-interactive)
+ports/coding-agent/build/coding-agent --base-url http://... --prompt "hello"
+# → No cancel_flag; no TUI animation
 ```
 
 ## Acceptance Criteria
 
-- [ ] `Provider::cancel()` method exists and can abort an in-flight HTTP request.
-- [ ] Ctrl+C sets an interrupt flag and returns to prompt (doesn't kill the process).
-- [ ] TUI animation displays while waiting for LLM response.
-- [ ] Animation stops when response arrives or is interrupted.
-- [ ] Tool execution shows status (`[tool: <name>] running...`).
-- [ ] After interrupt, partial responses are discarded and history is preserved up to last complete turn.
-- [ ] User can continue the session after an interrupt.
-- [ ] No visual artifacts when no interrupt occurs.
-- [ ] Build passes with zero errors and zero new warnings.
+- [x] Cooperative cancellation for LLM requests via `cancel_flag` (interactive).
+- [x] Ctrl+C sets `global_cancel_flag` and returns to prompt in interactive mode (does not rely on exiting).
+- [x] TUI spinner during LLM wait / between tool rounds (interactive).
+- [x] Animation stops when the loop returns (success, error, or interrupt).
+- [x] Tool execution emits `[tool: …]` start/finish lines (plain newline-based output).
+- [ ] Full checklist for tool UX (timings, in-place updates, slow-tool spinner, interrupt during tool).
+- [x] Partial assistant content not persisted on interrupt; user row may remain in session file (see task 5).
+- [x] User can continue the session after an interrupt in interactive mode.
+- [ ] Build passes with zero errors and zero new warnings (verify locally after changes).

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@ int response_content_tokens(const ChatResponse& response);
 int response_tool_calls_tokens(const ChatResponse& response);
 bool should_compact(int total_tokens, int context_size, int reserve_tokens);
 
+/// All statistics from a compaction run.
 struct CompactionStats {
   int tokens_before = 0;
   int tokens_after = 0;
@@ -21,8 +23,11 @@ struct CompactionStats {
   bool did_compact = false;
   std::string summary;
   std::string previous_summary;
+  bool is_split_turn = false;
+  std::string turn_start_entry_id;
 };
 
+/// Compact history: summarize older messages, keep recent ones verbatim.
 bool compact_history(
     std::vector<ChatMessage>& messages,
     Provider& provider,

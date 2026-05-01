@@ -105,6 +105,8 @@ void print_usage() {
       << "  --no-tools                Disable tool calling\n"
       << "  --no-context-files        Do not load AGENTS.md/CLAUDE.md\n"
       << "  --no-stream               Disable streaming mode\n"
+      << "  --no-compaction-fail-fast\n"
+      << "                            Skip compaction on failure instead of aborting\n"
       << "  --prompt <text>           Prompt text to send\n"
       << "  --help                    Show this help\n"
       << "\n"
@@ -140,6 +142,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .no_tools = false,
       .no_context_files = false,
       .new_session = false,
+      .compaction_fail_fast = true,
   };
 
   if (const auto settings = load_settings_json(); settings.has_value()) {
@@ -151,6 +154,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     load_optional(settings.value(), "context_size", config.context_size);
     load_optional(settings.value(), "compaction_reserve_tokens", config.compaction_reserve_tokens);
     load_optional(settings.value(), "compaction_keep_recent_tokens", config.compaction_keep_recent_tokens);
+    load_optional(settings.value(), "compaction_fail_fast", config.compaction_fail_fast);
   }
 
   config.provider = get_env_or_default("CODING_AGENT_PROVIDER", config.provider);
@@ -273,6 +277,10 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     }
     if (arg == "--no-context-files") {
       config.no_context_files = true;
+      continue;
+    }
+    if (arg == "--no-compaction-fail-fast") {
+      config.compaction_fail_fast = false;
       continue;
     }
     if (arg == "--prompt" && i + 1 < argc) {

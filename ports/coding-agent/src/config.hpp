@@ -27,6 +27,7 @@ struct Config {
   bool no_tools;
   bool no_context_files;
   bool new_session;
+  bool compaction_fail_fast;
 };
 
 std::optional<Config> parse_config(int argc, char** argv, std::string& error);

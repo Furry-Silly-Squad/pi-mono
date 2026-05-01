@@ -214,6 +214,15 @@ std::vector<ChatMessage> SessionStore::load_messages(std::string& error) {
               .tool_calls = {},
           };
           out.push_back(std::move(message));
+        } else if (row.value("type", "") == "compaction_skipped") {
+          const std::string reason = row.value("reason", "unknown");
+          const int tokens_before = row.value("tokens_before", 0);
+          compaction_skipped_events_.push_back(
+              CompactionSkippedEvent{
+                  .reason = reason,
+                  .tokens_before = tokens_before,
+              }
+          );
         }
         continue;
       }
@@ -264,6 +273,10 @@ void SessionStore::record_compaction(const CompactionEvent& event) {
 
 std::string SessionStore::get_session_id() const {
   return session_id_;
+}
+
+const std::string& SessionStore::get_session_path() const {
+  return session_path_;
 }
 
 }  // namespace coding_agent

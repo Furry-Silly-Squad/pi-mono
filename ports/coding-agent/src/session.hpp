@@ -45,6 +45,9 @@ class SessionStore {
   // Get session ID
   std::string get_session_id() const;
 
+  // Get session file path
+  const std::string& get_session_path() const;
+
  private:
   std::string session_dir_;
   std::string session_id_;
@@ -53,6 +56,12 @@ class SessionStore {
   std::vector<std::string> message_entry_ids_;
   // Stores first_kept_entry_id from each compaction row
   std::vector<std::string> compaction_first_kept_entry_ids_;
+  // Stores compaction_skipped events for display
+  struct CompactionSkippedEvent {
+    std::string reason;
+    int tokens_before;
+  };
+  std::vector<CompactionSkippedEvent> compaction_skipped_events_;
   // Tracks compaction events for /stats
   int compaction_count_ = 0;
   CompactionEvent last_compaction_event_;

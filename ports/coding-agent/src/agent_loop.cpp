@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <fstream>
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <sstream>
@@ -140,6 +141,7 @@ RunResult run_agent_loop(
     on_chunk(token_breakdown.str());
 
     CompactionStats compaction_stats;
+    bool compaction_failed = false;
     if (should_compact(
             total_context_tokens(history),
             config.context_size,
@@ -157,10 +159,30 @@ RunResult run_agent_loop(
               &compaction_stats,
               error
           )) {
-        return {.ok = false, .output = "", .error = "Compaction failed: " + error};
+        compaction_failed = true;
       }
 
-      if (compaction_stats.did_compact) {
+      if (compaction_failed) {
+        if (config.compaction_fail_fast) {
+          return {.ok = false, .output = "", .error = "Compaction failed: " + error};
+        } else {
+          // Graceful skip: emit warning, persist skipped event, continue.
+          std::ostringstream compact_skip;
+          compact_skip << "[COMPACT] skipped: " << error << "\n";
+          on_chunk(compact_skip.str());
+
+          std::string persist_error_ignored;
+          // Persist compaction_skipped row
+          try {
+            std::ofstream output(session.get_session_path(), std::ios::app);
+            output << nlohmann::json{{"type", "compaction_skipped"},
+                                     {"reason", error},
+                                     {"tokens_before", total_context_tokens(history)}}.dump() << "\n";
+          } catch (...) {
+            // Best effort - don't fail the run if we can't persist the skip event
+          }
+        }
+      } else if (compaction_stats.did_compact) {
         std::ostringstream compact_status;
         compact_status << "[COMPACT] " << compaction_stats.tokens_before << " -> " << compaction_stats.tokens_after
                        << " tokens\n";

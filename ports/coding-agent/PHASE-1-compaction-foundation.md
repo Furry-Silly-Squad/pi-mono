@@ -29,16 +29,17 @@ Improve compaction quality and determinism without changing session model archit
 
 **Must-have**
 
-- [x] Add a `session_entry_id` field to the `ChatMessage` struct (`std::optional<std::string> entry_id`).
-- [x] On append, generate a monotonic ID per row (millisecond timestamp + counter suffix to avoid collisions within the same ms).
-- [x] Persist `id` field in every `message` JSONL row (written when `entry_id.has_value()`).
+- [x] Add an `entry_id` field to the `ChatMessage` struct (`std::optional<std::string> entry_id`).
+- [ ] On append, generate a monotonic ID per row (millisecond timestamp + counter suffix to avoid collisions within the same ms). Generator exists (`generate_entry_id` / `assign_entry_id`) but call sites do not set `entry_id` yet.
+- [x] Persist `id` field in `message` JSONL rows when `entry_id.has_value()` (not wired end-to-end until append assigns IDs).
 - [ ] Reload: populate `entry_id` from loaded rows; fall back to positional index for legacy rows without IDs.
 
 **Current code state:**
 - `ChatMessage` in `providers/provider.hpp` has `std::optional<std::string> entry_id`.
-- `SessionStore::assign_entry_id()` in `session.cpp` generates IDs via `generate_entry_id()` (timestamp + monotonic counter).
+- `SessionStore::assign_entry_id()` in `session.cpp` returns IDs from `generate_entry_id()` (timestamp + process-wide monotonic counter suffix).
 - `SessionStore::append()` writes `"id"` to JSONL when `message.entry_id.has_value()`.
-- `SessionStore::load_messages()` does **not** populate `entry_id` on loaded messages. The `message_entry_ids_` vector and `compaction_first_kept_entry_ids_` vector are declared but never populated during load.
+- `assign_entry_id()` is **not** called from `agent_loop.cpp` or `agent.cpp`; appended user/assistant/tool messages omit `entry_id`, so new sessions typically have no `id` on message rows until this is wired.
+- `SessionStore::load_messages()` does **not** populate `entry_id` on loaded messages. It does not read `"id"` from JSON. The `message_entry_ids_` vector and `compaction_first_kept_entry_ids_` vectors are declared but never populated during load.
 
 **Files:** `session.hpp`, `session.cpp`
 
@@ -56,7 +57,7 @@ Improve compaction quality and determinism without changing session model archit
 
 **Current code state:**
 - `CompactionStats` in `compaction.hpp` still uses `int first_kept_index = -1` (no `first_kept_entry_id` field).
-- `CompactionEvent` in `session.hpp` has both fields, but `agent_loop.cpp` only sets `first_kept_index` when calling `append_compaction()`.
+- `CompactionEvent` in `session.hpp` has both fields, but `agent_loop.cpp` only initializes `first_kept_index` and `summary` when calling `append_compaction()`; `first_kept_entry_id` is left unset (`std::nullopt`).
 - `append_compaction()` writes both `first_kept_index` and `first_kept_entry_id` to JSONL (conditional), but `first_kept_entry_id` is never populated.
 - `load_messages()` does not extract `first_kept_entry_id` from compaction rows.
 
@@ -161,8 +162,8 @@ cmake --build ports/coding-agent/build -j
 ports/coding-agent/build/coding-agent --help
 
 # Manual scenario: inspect JSONL after a long session that triggers compaction
-# - confirm rows have `id` fields
-# - confirm compaction rows have `first_kept_entry_id` (not `first_kept_index`)
+# - after Task 1 wiring: confirm message rows have `id` fields
+# - target state (Phase 1 complete): compaction rows use `first_kept_entry_id`; today rows still include `first_kept_index` when compaction runs
 # - confirm reloaded history includes compaction summary as context message
 cat ~/.config/coding-agent/sessions/<latest>.jsonl | python3 -m json.tool
 ```

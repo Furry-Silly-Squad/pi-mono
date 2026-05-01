@@ -98,9 +98,31 @@ add_executable(coding-agent-compaction-carry-forward-test test/compaction_carry_
 target_include_directories(coding-agent-compaction-carry-forward-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(coding-agent-compaction-carry-forward-test PRIVATE nlohmann_json::nlohmann_json)
 
+# AgentSession integration test (Phase 7). Pulls in the full runtime except provider/main.
+add_executable(coding-agent-agent-session-test
+  test/agent_session_test.cpp
+  src/agent_session.cpp
+  src/compaction.cpp
+  src/context_loader.cpp
+  src/file_ops.cpp
+  src/session.cpp
+  src/system_prompt.cpp
+  src/tools/tool_registry.cpp
+  src/tools/bash_tool.cpp
+  src/tools/edit_tool.cpp
+  src/tools/find_tool.cpp
+  src/tools/grep_tool.cpp
+  src/tools/ls_tool.cpp
+  src/tools/read_tool.cpp
+  src/tools/write_tool.cpp
+)
+target_include_directories(coding-agent-agent-session-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-agent-session-test PRIVATE nlohmann_json::nlohmann_json)
+
 enable_testing()
 add_test(NAME coding-agent-fileops COMMAND coding-agent-fileops-test)
 add_test(NAME coding-agent-branch-summary COMMAND coding-agent-branch-summary-test)
 add_test(NAME coding-agent-session-store COMMAND coding-agent-session-store-test)
 add_test(NAME coding-agent-branch-traversal COMMAND coding-agent-branch-traversal-test)
 add_test(NAME coding-agent-compaction-carry-forward COMMAND coding-agent-compaction-carry-forward-test)
+add_test(NAME coding-agent-agent-session COMMAND coding-agent-agent-session-test)

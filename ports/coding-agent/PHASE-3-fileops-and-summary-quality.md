@@ -136,6 +136,8 @@ Tests:
 
 - `coding-agent-fileops-test`: exercises `extract_file_ops_from_messages`, `merge_file_ops`, `build_file_ops_footer`.
 - `coding-agent-branch-summary-test`: loads `test/fixtures/phase3_branch_session.jsonl` and asserts `BranchSummaryData` lists and summary footer.
+- `coding-agent-session-store-test`: temp JSONL directory; compaction row hydration and `append_compaction` reload (last row wins for stored file ops).
+- `coding-agent-compaction-carry-forward-test`: fake `Provider` + `compact_history()` with non-null prior `FileOps` (simulates carry-forward into the next compaction).
 
 ### Manual scenario (live provider)
 
@@ -165,7 +167,7 @@ Validation status:
 ## Acceptance Criteria
 
 - [x] `read_files` and `modified_files` correctly reflect tool calls (verified by `coding-agent-fileops-test` and branch-summary fixture test).
-- [ ] Successive compactions carry forward file ops from prior windows (requires provider-backed compaction run or future session-store unit test with injectable session path).
+- [x] Successive compactions carry forward file ops from prior windows (`coding-agent-compaction-carry-forward-test`; prior ops passed as `FileOps*` match resumed-session behavior).
 - [x] Branch summary includes file ops extracted from the session file (fixture + `coding-agent-branch-summary-test`).
 - [x] Summary text includes a file footer when file ops are non-empty (asserted in branch-summary test).
 - [x] Build passes with zero errors and zero new warnings.

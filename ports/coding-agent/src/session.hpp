@@ -28,7 +28,9 @@ struct BranchSummaryEvent {
 
 class SessionStore {
  public:
-  explicit SessionStore(std::string cwd);
+  /// Normal constructor uses `~/.config/coding-agent/sessions` (or `$HOME`-relative fallback).
+  /// If `session_dir_override` is non-empty, session files are stored there instead (used by tests).
+  explicit SessionStore(std::string cwd, std::optional<std::string> session_dir_override = std::nullopt);
 
   std::string start_or_resume(const std::optional<std::string>& requested_id, bool force_new);
   bool append(const ChatMessage& message, std::string& error);

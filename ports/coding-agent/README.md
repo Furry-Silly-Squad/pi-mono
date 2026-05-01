@@ -36,6 +36,25 @@ Binary:
 
 `ports/coding-agent/build/coding-agent`
 
+### Tests (local, no LLM)
+
+Offline checks live under `ports/coding-agent/test/` and are registered with CTest:
+
+```bash
+cmake -S ports/coding-agent -B ports/coding-agent/build
+cmake --build ports/coding-agent/build -j
+ctest --test-dir ports/coding-agent/build --output-on-failure
+```
+
+| Target | What it checks |
+|--------|----------------|
+| `coding-agent-fileops-test` | `extract_file_ops_from_messages`, `merge_file_ops`, footer formatting |
+| `coding-agent-branch-summary-test` | Fixture JSONL and `summarize_branch_session_file()` |
+| `coding-agent-session-store-test` | Temp-dir session file: hydrate compaction `read_files`/`modified_files`, append, reload |
+| `coding-agent-compaction-carry-forward-test` | Fake provider + `compact_history()` merges prior `FileOps` with summarized window |
+
+`SessionStore` accepts an optional session directory (second constructor argument) so tests never write under `~/.config`; production code uses the default path only.
+
 If CMake cannot find readline on macOS/Homebrew:
 
 ```bash
@@ -113,10 +132,13 @@ In addition to `session` and `message` rows, the port now persists:
   - `tokens_before`
   - `tokens_after`
   - `first_kept_index`
+  - `first_kept_entry_id` (when present)
   - `summary`
+  - `read_files`, `modified_files` (arrays of paths)
 - `branch_summary` rows:
   - `source_session_id`
   - `summary`
+  - `read_files`, `modified_files` (arrays of paths)
 
 On resume, these rows are reloaded as synthetic assistant context messages.
 

@@ -60,7 +60,14 @@ std::optional<std::filesystem::path> latest_session_path(const std::string& sess
 
 }  // namespace
 
-SessionStore::SessionStore(std::string cwd) : session_dir_(default_session_dir()), session_id_(), session_path_() {
+SessionStore::SessionStore(std::string cwd, std::optional<std::string> session_dir_override)
+    : session_dir_(
+          (session_dir_override.has_value() && !session_dir_override->empty())
+              ? std::move(*session_dir_override)
+              : default_session_dir()
+      ),
+      session_id_(),
+      session_path_() {
   std::filesystem::create_directories(session_dir_);
   (void)cwd;
 }

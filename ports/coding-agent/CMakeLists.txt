@@ -86,6 +86,16 @@ target_compile_definitions(
   "CODING_AGENT_TEST_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures\""
 )
 
+add_executable(coding-agent-session-store-test test/session_store_roundtrip_test.cpp src/session.cpp src/branch_summary.cpp src/file_ops.cpp)
+target_include_directories(coding-agent-session-store-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-session-store-test PRIVATE nlohmann_json::nlohmann_json)
+
+add_executable(coding-agent-compaction-carry-forward-test test/compaction_carry_forward_test.cpp src/compaction.cpp src/file_ops.cpp)
+target_include_directories(coding-agent-compaction-carry-forward-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-compaction-carry-forward-test PRIVATE nlohmann_json::nlohmann_json)
+
 enable_testing()
 add_test(NAME coding-agent-fileops COMMAND coding-agent-fileops-test)
 add_test(NAME coding-agent-branch-summary COMMAND coding-agent-branch-summary-test)
+add_test(NAME coding-agent-session-store COMMAND coding-agent-session-store-test)
+add_test(NAME coding-agent-compaction-carry-forward COMMAND coding-agent-compaction-carry-forward-test)

@@ -6,17 +6,17 @@ This file catalogs functionality present in `packages/coding-agent/src` that is 
 
 ## 1. Agent Session (agent-session.ts)
 
-The C++ port has a flat `agent_loop.cpp` with no session abstraction. The TypeScript `AgentSession` class is the core abstraction.
+The C++ port now includes an `AgentSession` API declaration in `agent_session.hpp`, but runtime execution is still wired through `agent_loop.cpp` from `agent.cpp`.
 
 | Feature | TypeScript | C++ Port |
 |---------|-----------|----------|
-| AgentSession class | Full lifecycle, state, events | No equivalent |
-| Event subscription system (subscribe, _handleAgentEvent, _emit) | Yes | No |
-| Agent state (state, model, thinkingLevel, isStreaming, systemPrompt) | Yes | No |
-| Model management (setModel, cycleModel, cycleThinkingLevel, setThinkingLevel) | Yes | No |
-| Thinking levels (off, minimal, low, medium, high, xhigh) | Yes | No |
+| AgentSession class | Full lifecycle, state, events | Partial (declared in `agent_session.hpp`, not wired into runtime path) |
+| Event subscription system (subscribe, _handleAgentEvent, _emit) | Yes | Partial (event types + handler API declared, no implementation wired) |
+| Agent state (state, model, thinkingLevel, isStreaming, systemPrompt) | Yes | Partial (state fields declared, runtime still uses `run_agent_loop`) |
+| Model management (setModel, cycleModel, cycleThinkingLevel, setThinkingLevel) | Yes | Partial (API declared, no implementation wired) |
+| Thinking levels (off, minimal, low, medium, high, xhigh) | Yes | Partial (`off..high` declared; no `xhigh` level in C++ enum) |
 | Queue management (steer, followUp, clearQueue) | Yes | No |
-| Auto-compaction (overflow recovery, threshold-based) | Yes | Partial (manual only in agent_loop) |
+| Auto-compaction (overflow recovery, threshold-based) | Yes | Partial (threshold-triggered in `agent_loop`; no `AgentSession` integration) |
 | Branch summarization (navigateTree, generateBranchSummary) | Yes | Partial (branch_summary.cpp exists but not wired to session) |
 | Auto-retry with exponential backoff | Yes | No |
 | Bash execution with streaming and abort | Yes | No (bash is a tool, not a session-level operation) |
@@ -30,7 +30,7 @@ The C++ port has a flat `agent_loop.cpp` with no session abstraction. The TypeSc
 | Prompt template expansion | Yes | No |
 | Skill command expansion (/skill:name) | Yes | No |
 | Extension system integration (ExtensionRunner, bindExtensions, reload) | Yes | No |
-| Tool registry management (getActiveToolNames, setActiveToolsByName, getAllTools) | Yes | No |
+| Tool registry management (getActiveToolNames, setActiveToolsByName, getAllTools) | Yes | Partial (API declared on `AgentSession`) |
 | Context usage tracking (getContextUsage) | Yes | No |
 | Model cycling with scoped models | Yes | No |
 
@@ -38,14 +38,14 @@ The C++ port has a flat `agent_loop.cpp` with no session abstraction. The TypeSc
 
 ## 2. Session Manager (session-manager.ts)
 
-The C++ `SessionStore` is a simple JSONL append/read. The TypeScript `SessionManager` has a full tree data structure.
+The C++ `SessionStore` remains a linear JSONL store (not a tree manager), but it now persists and reloads several non-message event row types.
 
 | Feature | TypeScript | C++ Port |
 |---------|-----------|----------|
 | SessionManager class | Full tree traversal, branching | No (SessionStore is flat) |
-| Session entry types (message, compaction, custom, branchSummary, bashExecution, modelChange, thinkingLevelChange, sessionInfo, label) | 9+ entry types | Only message, compaction, branch_summary, compaction_skipped |
+| Session entry types (message, compaction, custom, branchSummary, bashExecution, modelChange, thinkingLevelChange, sessionInfo, label) | 9+ entry types | Partial (`message`, `compaction`, `branch_summary`, `compaction_skipped`) |
 | Branch/leaf management (branch, resetLeaf, getLeafId) | Yes | No |
-| Custom entries (compactionSummary, branchSummary, bashExecution, modelChange, thinkingLevelChange, sessionInfo, label) | Yes | No |
+| Custom entries (compactionSummary, branchSummary, bashExecution, modelChange, thinkingLevelChange, sessionInfo, label) | Yes | Partial (`compaction` + `branch_summary` rows supported) |
 | Labels on entries | Yes | No |
 | Session migration (migrateSessionEntries) | Yes | No |
 | Session context building (buildSessionContext) | Yes | No |
@@ -79,12 +79,12 @@ The C++ `SessionStore` is a simple JSONL append/read. The TypeScript `SessionMan
 
 | Feature | TypeScript | C++ Port |
 |---------|-----------|----------|
-| SettingsManager class | Full settings persistence | No |
-| Compaction settings (enabled, reserveTokens, keepRecentTokens) | Yes | Config-level only |
+| SettingsManager class | Full settings persistence | No (no dedicated manager class) |
+| Compaction settings (enabled, reserveTokens, keepRecentTokens) | Yes | Partial (loaded via settings/env/CLI in `config.cpp`) |
 | Retry settings (enabled, maxRetries, baseDelayMs) | Yes | No |
 | Image settings (autoResize) | Yes | No |
 | Shell settings (commandPrefix, shellPath) | Yes | No |
-| Default model/provider persistence | Yes | No |
+| Default model/provider persistence | Yes | Partial (`~/.config/coding-agent/settings.json` + env support) |
 | Default thinking level persistence | Yes | No |
 | Steering/follow-up mode persistence | Yes | No |
 | Theme persistence | Yes | No |
@@ -105,9 +105,9 @@ The C++ `SessionStore` is a simple JSONL append/read. The TypeScript `SessionMan
 | generateBranchSummary | Branch summarization | Partial (branch_summary.cpp) |
 | collectEntriesForBranchSummary | Entry collection | Partial |
 | serializeConversation | Session serialization | Partial |
-| Compaction settings (from SettingsManager) | Yes | Config-level only |
-| Auto-compaction (overflow + threshold) | Yes | No |
-| Compaction failure handling (fail-fast vs graceful skip) | Yes | Partial (fail-fast only) |
+| Compaction settings (from SettingsManager) | Yes | Partial (from `Config` loaded via settings/env/CLI) |
+| Auto-compaction (overflow + threshold) | Yes | Partial (threshold check + compaction in `agent_loop`) |
+| Compaction failure handling (fail-fast vs graceful skip) | Yes | Partial (`compaction_fail_fast` and graceful skip mode both supported) |
 
 ---
 
@@ -131,7 +131,7 @@ The C++ `SessionStore` is a simple JSONL append/read. The TypeScript `SessionMan
 
 ## 8. Interactive Mode Components (modes/interactive/components/)
 
-The C++ port has a basic `interactive_mode.cpp`. The TypeScript version has 30+ UI components.
+The C++ port has a readline-based `interactive_mode.cpp` with command handling, token budget/status output, Ctrl+C cancellation, and TUI animation, but not the TypeScript component architecture.
 
 | Component | TypeScript | C++ Port |
 |-----------|-----------|----------|
@@ -200,7 +200,7 @@ The C++ port has a basic `interactive_mode.cpp`. The TypeScript version has 30+ 
 
 | Feature | TypeScript | C++ Port |
 |---------|-----------|----------|
-| runPrintMode | Print mode implementation | Partial (print_mode.cpp exists but simpler) |
+| runPrintMode | Print mode implementation | Partial (`print_mode.cpp` supports prompt/stdin one-shot flow via `run_agent_loop`) |
 
 ---
 
@@ -341,30 +341,26 @@ The C++ port has a basic `interactive_mode.cpp`. The TypeScript version has 30+ 
 
 The C++ port has the following core infrastructure that the TypeScript original does not need to expose:
 - LlamaCpp provider (C++ native)
-- Simple JSONL session store (SessionStore)
+- Linear JSONL session store (SessionStore) with `compaction`/`branch_summary`/`compaction_skipped` rows
 - Basic tools (bash, edit, find, grep, ls, read, write)
 - Basic agent loop with compaction
-- Basic interactive and print modes
+- Readline interactive and print modes (including `/compact`, `/stats`, token budget status, and cancellation)
+- `AgentSession` interface scaffolding (`agent_session.hpp`) not yet integrated in runtime
 
 **Missing from the port (by priority):**
 
-1. **AgentSession abstraction** - The entire AgentSession class is missing. This is the core session abstraction.
-2. **SessionManager** - Full tree data structure with branching, labels, and entry types.
-3. **Extension system** - ExtensionRunner, ExtensionContext, ExtensionAPI, hooks, commands.
-4. **SettingsManager** - Persistent settings for compaction, retry, images, shell, theme, etc.
-5. **AuthStorage** - OAuth and API key credential management.
-6. **ModelRegistry** - API key resolution and model discovery.
-7. **Auto-retry** - Exponential backoff for retryable errors.
-8. **Queue management** - steer/followUp for streaming sessions.
-9. **Bash execution** - Session-level bash with streaming and abort.
-10. **Interactive mode components** - 30+ UI components (footer, selectors, dialogs, etc.).
-11. **Theme system** - Full theme with colors and highlighting.
-12. **RPC mode** - JSONL RPC protocol.
-13. **HTML/JSONL export** - Session export functionality.
-14. **CLI utilities** - Config selector, session picker, model listing, etc.
-15. **Tool system enhancements** - File mutation queue, edit diffs, render utilities.
-16. **Skills system** - Skills loading and expansion.
-17. **Prompt templates** - File-based prompt template expansion.
-18. **SDK factories** - Programmatic session/tool creation.
-19. **Event bus** - Centralized event dispatching.
-20. **Resource loader** - Skills, prompts, themes, context files, system prompt.
+1. **AgentSession runtime integration** - `agent_session.hpp` exists, but `agent.cpp` still drives execution through `run_agent_loop(...)`.
+2. **SessionManager tree model** - Full branch/leaf traversal, labels, and typed tree entries remain unimplemented (current store is linear JSONL).
+3. **Extension system** - ExtensionRunner, ExtensionContext, ExtensionAPI, hooks, and extension commands remain missing.
+4. **AuthStorage + OAuth** - Credential backends and OAuth auth flows are not implemented.
+5. **ModelRegistry** - Provider registration, API key model discovery, and OAuth-aware model listing are missing.
+6. **Queue management and retry** - steer/followUp queues and exponential backoff retry logic are not implemented.
+7. **Session-level bash execution API** - C++ has a bash tool, but no session-level streaming/abort executor abstraction equivalent to TS.
+8. **Interactive UI parity** - TS selector/dialog/component surface is still largely absent.
+9. **Theme system parity** - TS theme/color/highlighting modules are not ported.
+10. **RPC mode** - JSONL RPC server/client mode is not implemented.
+11. **Session export parity** - HTML/JSONL export helpers are missing.
+12. **Tooling infrastructure parity** - File mutation queue, tool wrappers, and TS render/truncation helper modules are missing.
+13. **Prompt templates and skills system** - Template expansion and `/skill` command expansion are not implemented.
+14. **SDK factories** - Programmatic factories from `core/sdk.ts` are not ported.
+15. **Core utility parity** - Event bus and several support utilities remain missing or partial.

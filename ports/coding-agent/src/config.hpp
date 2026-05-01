@@ -20,6 +20,7 @@ struct Config {
   int context_size;
   int compaction_reserve_tokens;
   int compaction_keep_recent_tokens;
+  int max_tool_iterations;
   float temperature;
   bool print_mode;
   bool stream;

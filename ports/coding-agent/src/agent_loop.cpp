@@ -20,11 +20,12 @@ RunResult run_agent_loop(
       .tool_call_id = std::nullopt,
       .tool_calls = {},
   };
+  user.entry_id = session.assign_entry_id();
   history.push_back(user);
   std::string persist_error;
   session.append(user, persist_error);
 
-  for (int iteration = 0; iteration < 20; ++iteration) {
+  for (int iteration = 0; iteration < config.max_tool_iterations; ++iteration) {
     const std::vector<ToolDefinition> request_tools =
         config.no_tools ? std::vector<ToolDefinition>{} : tools.build_tool_definitions();
     // Tool rounds (especially `edit`) emit large JSON in assistant.tool_calls.arguments.
@@ -56,6 +57,7 @@ RunResult run_agent_loop(
         .tool_call_id = std::nullopt,
         .tool_calls = response.tool_calls,
     };
+    assistant.entry_id = session.assign_entry_id();
     history.push_back(assistant);
     session.append(assistant, persist_error);
 
@@ -110,6 +112,7 @@ RunResult run_agent_loop(
           .tool_call_id = call.id,
           .tool_calls = {},
       };
+      tool_message.entry_id = session.assign_entry_id();
       history.push_back(tool_message);
       session.append(tool_message, persist_error);
     }

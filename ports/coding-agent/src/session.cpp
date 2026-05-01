@@ -180,7 +180,7 @@ bool SessionStore::append_branch_summary(const BranchSummaryEvent& event, std::s
   }
 }
 
-std::vector<ChatMessage> SessionStore::load_messages(std::string& error) const {
+std::vector<ChatMessage> SessionStore::load_messages(std::string& error) {
   std::vector<ChatMessage> out;
   try {
     std::ifstream input(session_path_);
@@ -201,6 +201,9 @@ std::vector<ChatMessage> SessionStore::load_messages(std::string& error) const {
               .tool_calls = {},
           };
           out.push_back(std::move(message));
+          if (row.contains("first_kept_entry_id")) {
+            compaction_first_kept_entry_ids_.push_back(row.at("first_kept_entry_id").get<std::string>());
+          }
         } else if (row.value("type", "") == "branch_summary") {
           const std::string summary = row.value("summary", "");
           const std::string source = row.value("source_session_id", "");
@@ -222,6 +225,9 @@ std::vector<ChatMessage> SessionStore::load_messages(std::string& error) const {
       };
       if (row.contains("tool_call_id")) {
         message.tool_call_id = row.at("tool_call_id").get<std::string>();
+      }
+      if (row.contains("id")) {
+        message.entry_id = row.at("id").get<std::string>();
       }
       out.push_back(std::move(message));
     }

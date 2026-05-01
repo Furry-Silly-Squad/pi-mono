@@ -97,6 +97,8 @@ void print_usage() {
       << "                            Tokens reserved before context limit (default: 16384)\n"
       << "  --compaction-keep-recent-tokens <int>\n"
       << "                            Approx recent tokens to keep verbatim (default: 20000)\n"
+      << "  --max-tool-iterations <int>\n"
+      << "                            Max LLM rounds per user request (default: 40)\n"
       << "  --max-tokens <int>        Maximum generated tokens (default: 512)\n"
       << "  --temperature <float>     Sampling temperature (default: 0.6)\n"
       << "  --print                   Force one-shot print mode\n"
@@ -111,6 +113,7 @@ void print_usage() {
       << "  CODING_AGENT_BASE_URL\n"
       << "  CODING_AGENT_MODEL\n"
       << "  CODING_AGENT_API_KEY\n"
+      << "  CODING_AGENT_MAX_TOOL_ITERATIONS\n"
       << "Settings file:\n"
       << "  ~/.config/coding-agent/settings.json\n";
 }
@@ -127,9 +130,10 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .session_id = std::nullopt,
       .prompt = std::nullopt,
       .max_tokens = 512,
-      .context_size = 8192,
+      .context_size = 262144,
       .compaction_reserve_tokens = 16384,
       .compaction_keep_recent_tokens = 20000,
+      .max_tool_iterations = 40,
       .temperature = 0.6f,
       .print_mode = false,
       .stream = true,
@@ -153,6 +157,15 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
   config.base_url = get_env_or_default("CODING_AGENT_BASE_URL", config.base_url);
   config.model = get_env_or_default("CODING_AGENT_MODEL", config.model);
   config.api_key = get_env_or_default("CODING_AGENT_API_KEY", config.api_key);
+  const char* max_iter_env = std::getenv("CODING_AGENT_MAX_TOOL_ITERATIONS");
+  if (max_iter_env != nullptr) {
+    try {
+      config.max_tool_iterations = std::stoi(max_iter_env);
+    } catch (...) {
+      error = "Invalid value for CODING_AGENT_MAX_TOOL_ITERATIONS";
+      return std::nullopt;
+    }
+  }
 
   if (config.provider.empty()) {
     config.provider = "llama-cpp";
@@ -221,6 +234,13 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     if (arg == "--compaction-keep-recent-tokens" && i + 1 < argc) {
       if (!parse_int_arg(argv[++i], config.compaction_keep_recent_tokens)) {
         error = "Invalid value for --compaction-keep-recent-tokens";
+        return std::nullopt;
+      }
+      continue;
+    }
+    if (arg == "--max-tool-iterations" && i + 1 < argc) {
+      if (!parse_int_arg(argv[++i], config.max_tool_iterations)) {
+        error = "Invalid value for --max-tool-iterations";
         return std::nullopt;
       }
       continue;

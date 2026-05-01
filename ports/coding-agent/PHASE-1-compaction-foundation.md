@@ -14,12 +14,13 @@ Improve compaction quality and determinism without changing session model archit
 
 | # | Task | Status |
 |---|------|--------|
-| 1 | Add stable entry IDs to session rows | Partial |
-| 2 | Replace `first_kept_index` with `first_kept_entry_id` | Partial |
+| 1 | Add stable entry IDs to session rows | Done |
+| 2 | Replace `first_kept_index` with `first_kept_entry_id` | Not started |
 | 3 | Iterative boundary detection using prior compaction ID | Not started |
 | 4 | Structured summary prompt | Done |
 | 5 | Iterative summary update prompt | Not started |
 | 6 | Usage-aware token estimation | Partial |
+| 7 | Configurable tool loop iteration limit | Done |
 
 ---
 
@@ -30,18 +31,16 @@ Improve compaction quality and determinism without changing session model archit
 **Must-have**
 
 - [x] Add an `entry_id` field to the `ChatMessage` struct (`std::optional<std::string> entry_id`).
-- [ ] On append, generate a monotonic ID per row (millisecond timestamp + counter suffix to avoid collisions within the same ms). Generator exists (`generate_entry_id` / `assign_entry_id`) but call sites do not set `entry_id` yet.
-- [x] Persist `id` field in `message` JSONL rows when `entry_id.has_value()` (not wired end-to-end until append assigns IDs).
-- [ ] Reload: populate `entry_id` from loaded rows; fall back to positional index for legacy rows without IDs.
+- [x] On append, generate a monotonic ID per row (millisecond timestamp + counter suffix to avoid collisions within the same ms). Generator exists (`generate_entry_id` / `assign_entry_id`) and call sites now set `entry_id`.
+- [x] Persist `id` field in `message` JSONL rows when `entry_id.has_value()` (wired end-to-end).
+- [x] Reload: populate `entry_id` from loaded rows; fall back to positional index for legacy rows without IDs.
 
-**Current code state:**
-- `ChatMessage` in `providers/provider.hpp` has `std::optional<std::string> entry_id`.
-- `SessionStore::assign_entry_id()` in `session.cpp` returns IDs from `generate_entry_id()` (timestamp + process-wide monotonic counter suffix).
-- `SessionStore::append()` writes `"id"` to JSONL when `message.entry_id.has_value()`.
-- `assign_entry_id()` is **not** called from `agent_loop.cpp` or `agent.cpp`; appended user/assistant/tool messages omit `entry_id`, so new sessions typically have no `id` on message rows until this is wired.
-- `SessionStore::load_messages()` does **not** populate `entry_id` on loaded messages. It does not read `"id"` from JSON. The `message_entry_ids_` vector and `compaction_first_kept_entry_ids_` vectors are declared but never populated during load.
+**Changes made:**
+- `agent_loop.cpp`: `session.assign_entry_id()` called on user, assistant, and tool messages before `session.append()`.
+- `session.cpp`: `load_messages()` reads `"id"` from JSONL rows into `message.entry_id`. Compaction rows populate `compaction_first_kept_entry_ids_` from `"first_kept_entry_id"`.
+- `session.hpp`: `load_messages()` removed `const` qualifier to allow mutation of `compaction_first_kept_entry_ids_`.
 
-**Files:** `session.hpp`, `session.cpp`
+**Files:** `session.hpp`, `session.cpp`, `agent_loop.cpp`
 
 ---
 

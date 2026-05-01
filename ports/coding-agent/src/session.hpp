@@ -29,7 +29,7 @@ class SessionStore {
   bool append(const ChatMessage& message, std::string& error);
   bool append_compaction(const CompactionEvent& event, std::string& error);
   bool append_branch_summary(const BranchSummaryEvent& event, std::string& error);
-  std::vector<ChatMessage> load_messages(std::string& error) const;
+  std::vector<ChatMessage> load_messages(std::string& error);
 
   // Assign entry_id to a message and return it
   std::string assign_entry_id();

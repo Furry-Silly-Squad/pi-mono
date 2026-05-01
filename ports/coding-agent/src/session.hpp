@@ -37,6 +37,14 @@ class SessionStore {
   // Get the entry_id of the first kept message from the most recent compaction
   std::optional<std::string> get_last_compaction_first_kept_entry_id() const;
 
+  // Get compaction statistics
+  int get_compaction_count() const;
+  const CompactionEvent& get_last_compaction_event() const;
+  void record_compaction(const CompactionEvent& event);
+
+  // Get session ID
+  std::string get_session_id() const;
+
  private:
   std::string session_dir_;
   std::string session_id_;
@@ -45,6 +53,9 @@ class SessionStore {
   std::vector<std::string> message_entry_ids_;
   // Stores first_kept_entry_id from each compaction row
   std::vector<std::string> compaction_first_kept_entry_ids_;
+  // Tracks compaction events for /stats
+  int compaction_count_ = 0;
+  CompactionEvent last_compaction_event_;
 };
 
 }  // namespace coding_agent

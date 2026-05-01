@@ -62,12 +62,31 @@ RunResult run_agent_loop(
     history.push_back(assistant);
     session.append(assistant, persist_error);
 
+    // Print per-turn token breakdown
+    const int content_tok = response_content_tokens(response);
+    const int tool_tok = response_tool_calls_tokens(response);
+    const int turn_total = content_tok + tool_tok;
+    std::ostringstream token_breakdown;
+    token_breakdown << "→ " << turn_total << " tokens (content: " << content_tok << ", tool_calls: " << tool_tok << ")";
+    if (!response.tool_calls.empty()) {
+      token_breakdown << "\n  tools: ";
+      for (size_t i = 0; i < response.tool_calls.size(); ++i) {
+        if (i > 0) token_breakdown << ", ";
+        token_breakdown << response.tool_calls[i].name;
+      }
+      token_breakdown << "\n";
+    }
+    on_chunk(token_breakdown.str());
+
     CompactionStats compaction_stats;
     if (should_compact(
             total_context_tokens(history),
             config.context_size,
             config.compaction_reserve_tokens
         )) {
+      std::ostringstream compact_start;
+      compact_start << "\n[COMPACT] summarizing history...\n";
+      on_chunk(compact_start.str());
       if (!compact_history(
               history,
               provider,
@@ -81,20 +100,19 @@ RunResult run_agent_loop(
       }
 
       if (compaction_stats.did_compact) {
-        std::ostringstream status;
-        status << "\n[compaction] " << compaction_stats.tokens_before << " -> " << compaction_stats.tokens_after
-               << " tokens\n";
-        on_chunk(status.str());
+        std::ostringstream compact_status;
+        compact_status << "[COMPACT] " << compaction_stats.tokens_before << " -> " << compaction_stats.tokens_after
+                       << " tokens\n";
+        on_chunk(compact_status.str());
         std::string persist_error_ignored;
-        session.append_compaction(
-            CompactionEvent{
-                .tokens_before = compaction_stats.tokens_before,
-                .tokens_after = compaction_stats.tokens_after,
-                .first_kept_index = compaction_stats.first_kept_index,
-                .summary = compaction_stats.summary,
-            },
-            persist_error_ignored
-        );
+        CompactionEvent event{
+            .tokens_before = compaction_stats.tokens_before,
+            .tokens_after = compaction_stats.tokens_after,
+            .first_kept_index = compaction_stats.first_kept_index,
+            .summary = compaction_stats.summary,
+        };
+        session.append_compaction(event, persist_error_ignored);
+        session.record_compaction(event);
       }
     }
 

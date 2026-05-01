@@ -9,6 +9,8 @@ namespace coding_agent {
 
 int approx_tokens(const std::string& text);
 int total_context_tokens(const std::vector<ChatMessage>& messages);
+int response_content_tokens(const ChatResponse& response);
+int response_tool_calls_tokens(const ChatResponse& response);
 bool should_compact(int total_tokens, int context_size, int reserve_tokens);
 
 struct CompactionStats {

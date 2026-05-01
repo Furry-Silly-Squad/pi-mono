@@ -45,6 +45,18 @@ int approx_tokens(const std::string& text) {
   return static_cast<int>(text.size() / 4);
 }
 
+int response_content_tokens(const ChatResponse& response) {
+  return approx_tokens(response.content);
+}
+
+int response_tool_calls_tokens(const ChatResponse& response) {
+  int total = 0;
+  for (const auto& call : response.tool_calls) {
+    total += approx_tokens(call.arguments_json);
+  }
+  return total;
+}
+
 int total_context_tokens(const std::vector<ChatMessage>& messages) {
   int total = 0;
   for (const auto& message : messages) {

@@ -17,9 +17,9 @@ Add real-time token usage tracking and user-facing feedback to the interactive C
 |---|------|--------|
 | 1 | Token usage tracking in `ChatResponse` | Done |
 | 2 | Token budget display in interactive mode | Done |
-| 3 | Per-turn token breakdown (content vs tool calls) | Not started |
-| 4 | Compaction proximity indicator | Not started |
-| 5 | `/stats` command in interactive mode | Not started |
+| 3 | Per-turn token breakdown (content vs tool calls) | Done |
+| 4 | Compaction proximity indicator | Done |
+| 5 | `/stats` command in interactive mode | Done |
 
 ---
 
@@ -80,14 +80,13 @@ Add real-time token usage tracking and user-facing feedback to the interactive C
 - [ ] Print only in interactive mode, after the response completes.
 
 **Current code state:**
-- No per-turn token tracking.
-- `message_tokens()` in `compaction.cpp` already separates content and tool call tokens (internal utility).
+- `compaction.cpp` exports `response_content_tokens()` and `response_tool_calls_tokens()` utilities.
+- `agent_loop.cpp` prints per-turn breakdown after each assistant response:
+  - `→ <N> tokens (content: <X>, tool_calls: <Y>)`
+  - `  tools: <tool_name1>, <tool_name2>, ...` (when tool calls present)
+- Output goes through `on_chunk` callback so it streams correctly in interactive mode.
 
-**Nice-to-have**
-
-- [ ] Add `--verbose-tokens` flag to always show breakdown; otherwise only show on compaction events.
-
-**Files:** `agent_loop.cpp`, `modes/interactive_mode.cpp`
+**Files:** `compaction.hpp`, `compaction.cpp`, `agent_loop.cpp`
 
 ---
 
@@ -102,8 +101,9 @@ Add real-time token usage tracking and user-facing feedback to the interactive C
 - [ ] The compaction status is already printed via `on_chunk` callback in `agent_loop.cpp`, but make it more visible with a clear prefix.
 
 **Current code state:**
-- `agent_loop.cpp` already prints `[compaction] <before> -> <after> tokens` via `on_chunk`.
-- No proactive warning before compaction starts.
+- `agent_loop.cpp` now prints `[COMPACT] summarizing history...` before compaction starts.
+- After compaction: `[COMPACT] <tokens_before> → <tokens_after> tokens` (replaces the old `[compaction]` prefix).
+- Proactive warning is printed via `on_chunk` callback so it streams correctly.
 
 **Files:** `agent_loop.cpp`
 
@@ -125,14 +125,12 @@ Add real-time token usage tracking and user-facing feedback to the interactive C
 - [ ] Add `/tokens` as an alias for `/stats` (abbreviated: just token counts, no session metadata).
 
 **Current code state:**
-- `SessionStore` has `compaction_first_kept_entry_ids_` but does not track compaction count or stats.
-- `interactive_mode.cpp` handles `/exit`, `/clear`, but no `/stats`.
+- `SessionStore` now tracks compaction count and last compaction event.
+- `interactive_mode.cpp` handles `/stats` (full breakdown) and `/tokens` (abbreviated view).
+- `/stats` prints: session ID, message count, token usage with percentage, compaction proximity, compaction count with last compaction details, and config parameters.
+- `/tokens` prints: abbreviated token count only.
 
-**Nice-to-have**
-
-- [ ] Add `/clear-stats` to reset in-memory compaction stats (doesn't affect persisted data).
-
-**Files:** `modes/interactive_mode.cpp`, `session.hpp`, `session.cpp`
+**Files:** `modes/interactive_mode.cpp`, `session.hpp`, `session.cpp`, `agent_loop.cpp`
 
 ---
 
@@ -161,10 +159,10 @@ ports/coding-agent/build/coding-agent --base-url http://... --context-size 8192 
 
 ## Acceptance Criteria
 
-- [ ] `ChatResponse` carries `prompt_tokens` and `completion_tokens` from provider.
-- [ ] Interactive mode shows token budget status line after each response.
-- [ ] Per-turn token breakdown printed after each agent turn.
-- [ ] Compaction proximity warning printed before compaction starts.
-- [ ] `/stats` and `/tokens` commands work in interactive mode.
-- [ ] No status output in print mode (`--print` or piped stdin).
-- [ ] Build passes with zero errors and zero new warnings.
+- [x] `ChatResponse` carries `prompt_tokens` and `completion_tokens` from provider.
+- [x] Interactive mode shows token budget status line after each response.
+- [x] Per-turn token breakdown printed after each agent turn.
+- [x] Compaction proximity warning printed before compaction starts.
+- [x] `/stats` and `/tokens` commands work in interactive mode.
+- [x] No status output in print mode (`--print` or piped stdin).
+- [x] Build passes with zero errors and zero new warnings.

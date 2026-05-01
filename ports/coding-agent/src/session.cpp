@@ -249,4 +249,21 @@ std::optional<std::string> SessionStore::get_last_compaction_first_kept_entry_id
   return compaction_first_kept_entry_ids_.back();
 }
 
+int SessionStore::get_compaction_count() const {
+  return compaction_count_;
+}
+
+const CompactionEvent& SessionStore::get_last_compaction_event() const {
+  return last_compaction_event_;
+}
+
+void SessionStore::record_compaction(const CompactionEvent& event) {
+  compaction_count_++;
+  last_compaction_event_ = event;
+}
+
+std::string SessionStore::get_session_id() const {
+  return session_id_;
+}
+
 }  // namespace coding_agent

@@ -89,6 +89,37 @@ int run_interactive_mode(
       std::cout << "History cleared.\n";
       continue;
     }
+    if (prompt == "/stats" || prompt == "/session") {
+      std::cout << "\n=== Session Stats ===\n";
+      std::cout << "Session ID: " << session.get_session_id() << "\n";
+      std::cout << "Messages: " << history.size() << "\n";
+      const int total_tokens = total_context_tokens(history);
+      const int budget = config.context_size - config.compaction_reserve_tokens;
+      std::cout << "Tokens: " << total_tokens << " / " << budget << " ("
+                << (budget > 0 ? std::to_string(static_cast<int>(
+                                     (static_cast<double>(total_tokens) / budget) * 100.0))
+                                + "%"
+                                : "N/A")
+                << ")\n";
+      const int remaining = std::max(0, budget - total_tokens);
+      std::cout << "Compaction in ~" << remaining << " tokens\n";
+      std::cout << "Compactions: " << session.get_compaction_count() << "\n";
+      if (session.get_compaction_count() > 0) {
+        const auto& last = session.get_last_compaction_event();
+        std::cout << "Last compaction: " << last.tokens_before << " -> " << last.tokens_after << " tokens\n";
+      }
+      std::cout << "Context size: " << config.context_size << "\n";
+      std::cout << "Reserve tokens: " << config.compaction_reserve_tokens << "\n";
+      std::cout << "Keep recent tokens: " << config.compaction_keep_recent_tokens << "\n";
+      std::cout << "=====================\n\n";
+      continue;
+    }
+    if (prompt == "/tokens") {
+      std::cout << "\nTokens: " << total_context_tokens(history) << " / "
+                << (config.context_size - config.compaction_reserve_tokens) << "\n";
+      std::cout << "=====================\n\n";
+      continue;
+    }
 
     add_history(prompt.c_str());
     const RunResult result =

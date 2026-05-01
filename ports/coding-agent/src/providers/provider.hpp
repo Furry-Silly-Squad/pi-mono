@@ -19,6 +19,7 @@ struct ChatMessage {
   std::optional<std::string> tool_call_id;
   std::vector<ToolCall> tool_calls;
   std::optional<std::string> entry_id;
+  int usage_tokens = 0;
 };
 
 struct ToolDefinition {

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 
 #include <nlohmann/json.hpp>
 
@@ -21,6 +22,17 @@ std::string default_session_dir() {
     return ".coding-agent/sessions";
   }
   return (std::filesystem::path(home) / ".config" / "coding-agent" / "sessions").string();
+}
+
+// Monotonic entry ID counter per session
+static int64_t entry_counter = 0;
+
+std::string generate_entry_id() {
+  const auto now = std::chrono::system_clock::now();
+  const auto ms = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
+  const int64_t timestamp = ms.time_since_epoch().count();
+  int64_t counter = ++entry_counter;
+  return std::to_string(timestamp) + "_" + std::to_string(counter);
 }
 
 std::string now_id() {
@@ -104,6 +116,9 @@ bool SessionStore::append(const ChatMessage& message, std::string& error) {
         {"role", message.role},
         {"content", message.content},
     };
+    if (message.entry_id.has_value()) {
+      row["id"] = message.entry_id.value();
+    }
     if (message.tool_call_id.has_value()) {
       row["tool_call_id"] = message.tool_call_id.value();
     }
@@ -114,6 +129,9 @@ bool SessionStore::append(const ChatMessage& message, std::string& error) {
             {{"id", call.id}, {"name", call.name}, {"arguments_json", call.arguments_json}}
         );
       }
+    }
+    if (message.usage_tokens > 0) {
+      row["usage_tokens"] = message.usage_tokens;
     }
     output << row.dump() << "\n";
     return true;
@@ -130,9 +148,14 @@ bool SessionStore::append_compaction(const CompactionEvent& event, std::string& 
         {"type", "compaction"},
         {"tokens_before", event.tokens_before},
         {"tokens_after", event.tokens_after},
-        {"first_kept_index", event.first_kept_index},
         {"summary", event.summary},
     };
+    if (event.first_kept_index >= 0) {
+      row["first_kept_index"] = event.first_kept_index;
+    }
+    if (event.first_kept_entry_id.has_value()) {
+      row["first_kept_entry_id"] = event.first_kept_entry_id.value();
+    }
     output << row.dump() << "\n";
     return true;
   } catch (const std::exception& ex) {
@@ -206,6 +229,18 @@ std::vector<ChatMessage> SessionStore::load_messages(std::string& error) const {
     error = ex.what();
   }
   return out;
+}
+
+std::string SessionStore::assign_entry_id() {
+  std::string id = generate_entry_id();
+  return id;
+}
+
+std::optional<std::string> SessionStore::get_last_compaction_first_kept_entry_id() const {
+  if (compaction_first_kept_entry_ids_.empty()) {
+    return std::nullopt;
+  }
+  return compaction_first_kept_entry_ids_.back();
 }
 
 }  // namespace coding_agent

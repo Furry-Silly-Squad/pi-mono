@@ -27,9 +27,12 @@ RunResult run_agent_loop(
   for (int iteration = 0; iteration < 20; ++iteration) {
     const std::vector<ToolDefinition> request_tools =
         config.no_tools ? std::vector<ToolDefinition>{} : tools.build_tool_definitions();
+    // Tool rounds (especially `edit`) emit large JSON in assistant.tool_calls.arguments.
+    // Default max_tokens (~512–1024) truncates mid-JSON and breaks both stream and non-stream paths.
+    constexpr int k_tool_round_min_tokens = 8192;
     int request_max_tokens = config.max_tokens;
     if (!request_tools.empty()) {
-      request_max_tokens = std::max(request_max_tokens, 1024);
+      request_max_tokens = std::max(request_max_tokens, k_tool_round_min_tokens);
     }
 
     ChatRequest request{

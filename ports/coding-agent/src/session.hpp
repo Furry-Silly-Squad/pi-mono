@@ -12,6 +12,7 @@ struct CompactionEvent {
   int tokens_before = 0;
   int tokens_after = 0;
   int first_kept_index = -1;
+  std::optional<std::string> first_kept_entry_id;
   std::string summary;
 };
 
@@ -30,10 +31,20 @@ class SessionStore {
   bool append_branch_summary(const BranchSummaryEvent& event, std::string& error);
   std::vector<ChatMessage> load_messages(std::string& error) const;
 
+  // Assign entry_id to a message and return it
+  std::string assign_entry_id();
+
+  // Get the entry_id of the first kept message from the most recent compaction
+  std::optional<std::string> get_last_compaction_first_kept_entry_id() const;
+
  private:
   std::string session_dir_;
   std::string session_id_;
   std::string session_path_;
+  // Maps message index to entry_id for loaded messages
+  std::vector<std::string> message_entry_ids_;
+  // Stores first_kept_entry_id from each compaction row
+  std::vector<std::string> compaction_first_kept_entry_ids_;
 };
 
 }  // namespace coding_agent

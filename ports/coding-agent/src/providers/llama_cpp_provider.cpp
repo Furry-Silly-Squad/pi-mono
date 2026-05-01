@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -326,6 +327,8 @@ bool LlamaCppProvider::chat(
         continue;
       }
       if (call.arguments_json.empty() || !is_valid_json_value(call.arguments_json)) {
+        const std::string failing_tool_name = call.name;
+        const std::string failing_tool_id = call.id;
         const size_t total_size = call.arguments_json.size();
         const size_t tail_size = std::min<size_t>(300, total_size);
         const size_t tail_start = total_size > tail_size ? total_size - tail_size : 0;
@@ -350,16 +353,24 @@ bool LlamaCppProvider::chat(
         // Fallback: retry once in non-stream mode to recover from truncated SSE tool-call args.
         ChatRequest retry_request = request;
         retry_request.stream = false;
+        // Streamed tool-call JSON for `edit`/`write` can be tens of KB; raise completion budget.
+        constexpr int k_fallback_floor_tokens = 16384;
+        constexpr int k_fallback_cap_tokens = 65536;
+        const long long scaled =
+            static_cast<long long>(retry_request.max_tokens) * 4LL;
+        retry_request.max_tokens = static_cast<int>(
+            std::min<long long>(k_fallback_cap_tokens, std::max<long long>(scaled, k_fallback_floor_tokens))
+        );
         ChatResponse retry_response;
         std::string retry_error;
         if (chat(retry_request, retry_response, on_chunk, retry_error)) {
           response = std::move(retry_response);
-          std::cerr << "[debug][tool-stream-fallback] recovered via non-stream retry for tool '" << call.name
-                    << "'\n";
+          std::cerr << "[debug][tool-stream-fallback] recovered via non-stream retry for tool '"
+                    << failing_tool_name << "' id=" << failing_tool_id << "\n";
           return true;
         }
 
-        error = "Invalid streamed tool call arguments JSON for tool '" + call.name +
+        error = "Invalid streamed tool call arguments JSON for tool '" + failing_tool_name +
                 "' (tail: " + tail + "); fallback non-stream failed: " + retry_error;
         return false;
       }

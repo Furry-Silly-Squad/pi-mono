@@ -31,7 +31,7 @@ Replace `SessionStore` with `SessionManager` — a full tree-model session class
 
 | Area | Gap |
 |------|-----|
-| **Old files** | `session.cpp`/`session.hpp` still on disk but not compiled (orphaned, ~597 lines) |
+| **Old files** | ~~`session.cpp`/`session.hpp` still on disk but not compiled (orphaned, ~597 lines)~~ ✅ Deleted in commit 4594de1c |
 | **Interactive commands** | `/new` and `/branch` not yet wired in `interactive_mode.cpp` |
 | **Test coverage** | Session-store/branch-traversal tests rewritten; label, migration, and branching tests may need expansion |
 

@@ -132,6 +132,7 @@ int run_agent(int argc, char** argv) {
             const std::vector<SessionEntry> collected =
                 collect_entries_for_branch_summary(*old_mgr, handoff_old_leaf.value(), "");
             std::string gen_error;
+            std::cerr << "Summarizing previous session...\n" << std::flush;
             const BranchSummaryResult branch_result = generate_branch_summary(
                 collected,
                 provider,

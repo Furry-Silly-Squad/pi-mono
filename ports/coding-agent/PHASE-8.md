@@ -13,34 +13,27 @@ Replace `SessionStore` with `SessionManager` — a full tree-model session class
 
 ---
 
-## Current State of the Port (as of Phase 8 start)
+## Current State of the Port (as of Phase 8 completion)
 
 ### What exists
 
 | Area | Status |
 |------|--------|
-| `SessionStore` | Basic append-only JSONL writer; loads messages for LLM context; builds `SessionGraph` |
-| `SessionGraph` | `nodes` map, `leaf_id`, `get_branch()`, `find_common_ancestor()`, `get_node()` |
-| `SessionNode` | `id`, `parent_id`, `kind` (5 kinds), optional `message`/`compaction`/`branch` |
-| `SessionRowKind` | `SessionHeader`, `Message`, `Compaction`, `BranchSummary`, `CompactionSkipped` |
-| `load_session_graph()` | Parses JSONL into `SessionGraph`; assigns `parent_id` from previous row |
-| `branch_summary.cpp` | `collect_entries_for_branch_summary()`, `prepare_branch_entries()` |
+| `SessionManager` | Full tree-model session class with all 10 entry types, tree traversal, branching, labels, migration |
+| `SessionEntry` | `std::variant` of message, compaction, branch_summary, label, custom, custom_message, session_info, thinking_level_change, model_change, compaction_skipped |
+| `SessionTreeNode` | Rooted tree with children, labels, sorted by timestamp |
+| `SessionInfo` | Session metadata (path, id, cwd, name, timestamps, message count) |
+| `SessionContext` | Messages + thinkingLevel + model, built via `buildSessionContext()` |
+| `branch_summary.cpp` | Fully migrated to `SessionEntry` types |
+| `AgentSession` | Uses `SessionManager&` for all persistence |
 
-### What is missing (compared to TS `SessionManager`)
+### What remains (minor cleanup)
 
 | Area | Gap |
 |------|-----|
-| **Entry types** | No `LabelEntry`, `CustomEntry`, `CustomMessageEntry`, `SessionInfoEntry`, `ThinkingLevelChangeEntry`, `ModelChangeEntry` |
-| **Tree model** | No `getTree()` (rooted tree with children), no `getChildren()`, no `getLeafEntry()` |
-| **Labels** | No label system (user bookmarks/markers on entries) |
-| **Branching** | `branch()` exists implicitly via `parent_id` assignment, but no `branch(leafId)`, `branchWithSummary()`, `createBranchedSession()`, or `resetLeaf()` |
-| **Version migration** | No v1→v2 or v2→v3 migration logic |
-| **Session info** | No `getSessionName()`, `SessionInfo` struct, or `session_info` entries |
-| **Index** | `SessionGraph::nodes` is the only index; no `byId` fast lookup map for `SessionEntry` |
-| **Persistence model** | `SessionStore` appends rows; no `_rewriteFile()`, no flush-on-first-assistant logic |
-| **Factory API** | No `SessionManager::create()`, `::open()`, `::continueRecent()`, `::inMemory()`, `::forkFrom()`, `::list()`, `::listAll()` |
-| **Entry ID generation** | Global monotonic counter; no collision-checked short-ID generation |
-| **Timestamps** | No per-entry `timestamp` field in `SessionNode` / `SessionEntry` |
+| **Old files** | `session.cpp`/`session.hpp` still on disk but not compiled (orphaned, ~597 lines) |
+| **Interactive commands** | `/new` and `/branch` not yet wired in `interactive_mode.cpp` |
+| **Test coverage** | Session-store/branch-traversal tests rewritten; label, migration, and branching tests may need expansion |
 
 ---
 
@@ -165,27 +158,24 @@ Implementation: `session_entry.hpp` / `session_entry.cpp`. Helpers: `agent_sessi
 
 - [x] `agent.cpp` creates `SessionManager` (`create` / `continueRecent` / `openBySessionId`) instead of `SessionStore`.
 - [x] `interactive_mode.cpp` and `print_mode.cpp` signatures unchanged (still take `AgentSession&`).
-- [ ] `/new` command in interactive mode: create new session via `SessionManager::create()` (CLI `--new-session` uses `SessionManager`; TUI `/new` may still need wiring).
+- [ ] `/new` command in interactive mode: create new session via `SessionManager::create()` (CLI `--new-session` uses `SessionManager`; TUI `/new` not yet wired).
 - [ ] `/branch` command (if exists): use `sessionManager.branch()`.
 
 ### 7. Remove `SessionStore` and `SessionGraph`
 
-- [ ] Delete `session.hpp` / `session.cpp` (or rename to `session_manager.hpp` / `session_manager.cpp`).
-- [ ] Delete `SessionStore` class entirely.
-- [ ] Delete `SessionGraph` struct (replaced by `SessionManager::getTree()` / `byId`).
-- [ ] Delete `SessionNode` struct (replaced by `SessionEntry` types).
-- [ ] Delete `SessionRowKind` enum (replaced by `type` discriminator in `SessionEntry`).
-- [ ] Delete `load_session_graph()` function.
+- [x] `session.cpp` / `session.hpp` removed from CMakeLists.txt (no longer compiled).
+- [ ] Delete `session.hpp` / `session.cpp` files entirely (orphaned but still on disk).
 - [ ] Update all includes and forward declarations.
 
 ### 8. Update `branch_summary.cpp`
 
-- [ ] Adapt `collect_entries_for_branch_summary()` to use `SessionManager::getBranch()`.
-- [ ] Adapt `prepare_branch_entries()` to work with `SessionEntry` types.
+- [x] `collect_entries_for_branch_summary()` migrated to use `SessionEntry` types.
+- [x] `prepare_branch_entries()` works with `SessionEntry` types.
 
 ### 9. Build clean with `-Werror`
 
 - [x] Zero errors, zero new warnings (port builds with `-Werror`).
+- [x] All 6 tests pass (fileops, branch-summary, session-store, branch-traversal, compaction-carry-forward, agent-session).
 
 ---
 
@@ -306,7 +296,7 @@ cat ~/.config/coding-agent/sessions/*.jsonl | head -20
 - [ ] Ctrl+C cancellation unchanged.
 - [ ] TUI animation unchanged.
 - [x] Build clean with `-Werror`.
-- [ ] All tests pass (including rewritten + new tests).
+- [x] All 6 tests pass (fileops, branch-summary, session-store, branch-traversal, compaction-carry-forward, agent-session).
 
 ---
 

@@ -1,6 +1,8 @@
 #include "modes/interactive_mode.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <csignal>
 #include <iostream>
 #include <sstream>
@@ -112,7 +114,7 @@ int run_interactive_mode(AgentSession& agent) {
                       << "Keep recent:      " << cfg.compaction_keep_recent_tokens << "\n"
                       << "Model:            " << agent.model() << "\n"
                       << "Thinking level:   " << thinking_level_to_string(agent.thinking_level()) << "\n"
-                      << "\nCommands: /compact, /stats, /tokens, /thinking, /exit\n"
+                      << "\nCommands: /compact, /stats, /tokens, /thinking, /new, /branch, /exit\n"
                       << "=====================\n\n";
             continue;
         }
@@ -140,6 +142,76 @@ int run_interactive_mode(AgentSession& agent) {
         if (prompt == "/thinking") {
             agent.cycle_thinking_level();
             std::cout << "Thinking level: " << thinking_level_to_string(agent.thinking_level()) << "\n";
+            continue;
+        }
+
+        if (prompt == "/new") {
+            std::string newSessionId = agent.createNewSession();
+            if (newSessionId.empty()) {
+                std::cout << "[NEW] failed to create new session\n";
+            }
+            continue;
+        }
+
+        if (prompt == "/branch" || prompt.starts_with("/branch ")) {
+            std::string args;
+            if (prompt == "/branch") {
+                args.clear();
+            } else {
+                args = prompt.substr(8);
+            }
+            size_t firstNonSpace = args.find_first_not_of(" \t");
+            if (firstNonSpace != std::string::npos) {
+                args = args.substr(firstNonSpace);
+            } else {
+                args.clear();
+            }
+
+            if (args.empty()) {
+                agent.branch();
+                continue;
+            }
+
+            if (args == "summary" || args.starts_with("summary ")) {
+                std::string summaryArgs =
+                    (args == "summary") ? "" : args.substr(8);
+                firstNonSpace = summaryArgs.find_first_not_of(" \t");
+                if (firstNonSpace != std::string::npos) {
+                    summaryArgs = summaryArgs.substr(firstNonSpace);
+                } else {
+                    summaryArgs.clear();
+                }
+
+                std::optional<std::string> branchFromId;
+                std::string summaryText;
+                if (!summaryArgs.empty()) {
+                    if (summaryArgs.size() == 8 &&
+                        std::all_of(summaryArgs.begin(), summaryArgs.end(),
+                                    [](unsigned char c) { return std::isxdigit(c) != 0; })) {
+                        branchFromId = summaryArgs;
+                        summaryText  = "Branch from entry " + summaryArgs;
+                    } else {
+                        summaryText = summaryArgs;
+                    }
+                } else {
+                    summaryText = "Branch";
+                }
+
+                agent.branchWithSummary(summaryText, branchFromId);
+                continue;
+            }
+
+            if (args.starts_with("from:")) {
+                std::string entryId = args.substr(5);
+                firstNonSpace = entryId.find_first_not_of(" \t");
+                if (firstNonSpace != std::string::npos) {
+                    entryId = entryId.substr(firstNonSpace);
+                }
+                agent.branchFrom(entryId);
+                continue;
+            }
+
+            std::cerr << "Usage: /branch | /branch summary [text|entry-id] | /branch from:<entry-id>\n";
             continue;
         }
 

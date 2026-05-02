@@ -187,8 +187,10 @@ bool test_lifecycle() {
   std::vector<coding_agent::AgentEvent::Type> event_types;
   std::string captured_chunks;
 
+  std::string persisted_session_path;
   {
-    coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools, *session_mgr);
+    coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools,
+                                      std::move(session_mgr));
     agent.set_event_handler([&event_types](const coding_agent::AgentEvent& ev) {
       event_types.push_back(ev.type);
     });
@@ -212,6 +214,8 @@ bool test_lifecycle() {
            "assistant message recorded");
     EXPECT(captured_chunks.find("→") != std::string::npos,
            "per-turn token breakdown must be streamed");
+
+    persisted_session_path = agent.session_path();
   }
 
   // Verify event order: TurnStart, ModelCallStart, TurnEnd.
@@ -222,11 +226,11 @@ bool test_lifecycle() {
 
   // Reload via fresh AgentSession on the same file path and verify history is preserved.
   ScriptedProvider provider2;
-  const auto session_path = session_mgr->getSessionFile();
-  EXPECT(session_path.has_value(), "session must be persisted to a file");
-  auto session_mgr2 =
-      coding_agent::SessionManager::open(session_path.value(), session_dir.string(), session_dir.string());
-  coding_agent::AgentSession agent2(base_config(session_dir.string()), provider2, tools, *session_mgr2);
+  EXPECT(!persisted_session_path.empty(), "session must be persisted to a file");
+  auto session_mgr2 = coding_agent::SessionManager::open(persisted_session_path, session_dir.string(),
+                                                           session_dir.string());
+  coding_agent::AgentSession agent2(base_config(session_dir.string()), provider2, tools,
+                                     std::move(session_mgr2));
   EXPECT(agent2.message_count() == 3, "reloaded history preserved (system + user + assistant)");
   EXPECT(agent2.messages()[2].content == "hello back", "reloaded assistant content matches");
 
@@ -267,7 +271,7 @@ bool test_tool_flow() {
 
   auto cfg = base_config(session_dir.string());
   cfg.initial_active_tools = "echo";  // restrict to echo only
-  coding_agent::AgentSession agent(cfg, provider, tools, *session_mgr);
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
 
   EXPECT(agent.active_tools().size() == 1 && agent.active_tools().front() == "echo",
          "active_tools should reflect initial_active_tools filter");
@@ -356,7 +360,7 @@ bool test_auto_compaction() {
   cfg.compaction_keep_recent_tokens = 64;
   cfg.max_tool_iterations = 1;  // single round
 
-  coding_agent::AgentSession agent(cfg, provider, tools, *session_mgr);
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
   EXPECT(agent.message_count() >= 6, "history pre-seeded");
 
   std::vector<coding_agent::AgentEvent::Type> events;
@@ -418,7 +422,7 @@ bool test_manual_compact() {
   cfg.context_size = 4096;
   cfg.compaction_reserve_tokens = 512;
   cfg.compaction_keep_recent_tokens = 128;
-  coding_agent::AgentSession agent(cfg, provider, tools, *session_mgr);
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
 
   std::vector<coding_agent::AgentEvent::Type> events;
   agent.set_event_handler([&events](const coding_agent::AgentEvent& ev) {
@@ -450,7 +454,8 @@ bool test_interrupt_rolls_back_user() {
 
   auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
 
-  coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools, *session_mgr);
+  coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools,
+                                    std::move(session_mgr));
   const size_t before = agent.message_count();
   EXPECT(before == 1, "only system message present");
 
@@ -478,7 +483,8 @@ bool test_thinking_and_model() {
   tools.register_tool(std::make_unique<EchoTool>());
   auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
 
-  coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools, *session_mgr);
+  coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools,
+                                    std::move(session_mgr));
 
   // Round-trip ThinkingLevel <-> string.
   using TL = coding_agent::ThinkingLevel;

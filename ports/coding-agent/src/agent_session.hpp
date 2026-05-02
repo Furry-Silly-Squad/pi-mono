@@ -129,7 +129,7 @@ class AgentSession {
     AgentSession(const AgentSessionConfig& config,
                  Provider& provider,
                  ToolRegistry& tools,
-                 SessionManager& session);
+                 std::unique_ptr<SessionManager> session);
 
     ~AgentSession();
 
@@ -228,6 +228,30 @@ class AgentSession {
     /// Set event handler.
     void set_event_handler(AgentEventHandler handler);
 
+    /// Switch to a new session manager.
+    void switchSession(std::unique_ptr<SessionManager> new_session);
+
+    // ====================================================================
+    // Branching
+    // ====================================================================
+
+    /// Fork from the current leaf with a short summary entry (matches bare `/branch` in the TUI).
+    void branch();
+
+    /// Start a new branch from a specific entry ID.
+    void branchFrom(const std::string& branchFromId);
+
+    /// Start a new branch with a summary of the abandoned path.
+    std::string branchWithSummary(const std::string& summary,
+                                   const std::optional<std::string>& branchFromId = std::nullopt);
+
+    // ====================================================================
+    // New Session
+    // ====================================================================
+
+    /// Create a new session and switch to it. Returns the new session ID.
+    std::string createNewSession();
+
     // ====================================================================
     // Session Info
     // ====================================================================
@@ -270,6 +294,8 @@ class AgentSession {
 
     bool check_and_compact(const ChunkCallback& on_chunk);
 
+    void loadSessionContextIntoAgent();
+
     // ====================================================================
     // Event Helpers
     // ====================================================================
@@ -283,7 +309,7 @@ class AgentSession {
     AgentSessionConfig config_;
     Provider& provider_;
     ToolRegistry& tools_;
-    SessionManager& session_;
+    std::unique_ptr<SessionManager> session_;
 
     std::vector<ChatMessage> messages_;
     FileOps last_compaction_file_ops_;

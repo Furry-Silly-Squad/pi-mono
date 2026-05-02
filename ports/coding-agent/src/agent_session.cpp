@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <fstream>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <sstream>
 
@@ -104,51 +105,17 @@ ThinkingLevel string_to_thinking_level(const std::string& str) {
 AgentSession::AgentSession(const AgentSessionConfig& config,
                            Provider& provider,
                            ToolRegistry& tools,
-                           SessionManager& session)
+                           std::unique_ptr<SessionManager> session)
     : config_(config),
       provider_(provider),
       tools_(tools),
-      session_(session),
+      session_(std::move(session)),
       current_model_(config.model),
       current_thinking_level_(ThinkingLevel::Off) {
 
     active_tool_names_ = parse_tool_name_list(config_.initial_active_tools);
 
-    SessionContext ctx = session_.buildSessionContext();
-    messages_ = std::move(ctx.messages);
-    if (!ctx.model.modelId.empty()) {
-        current_model_   = ctx.model.modelId;
-        config_.model    = ctx.model.modelId;
-    }
-    if (!ctx.thinkingLevel.empty()) {
-        current_thinking_level_ = string_to_thinking_level(ctx.thinkingLevel);
-    }
-
-    if (messages_.empty() || messages_.front().role != "system") {
-        std::vector<ContextFile> context_files;
-        if (!config_.no_context_files) {
-            context_files = load_context_files(config_.cwd);
-        }
-        current_system_prompt_ = build_system_prompt(
-            config_.cwd,
-            config_.no_tools
-                ? std::vector<ToolDefinition>{}
-                : tools_.build_tool_definitions(),
-            context_files,
-            config_.append_system_prompts
-        );
-        if (config_.system_prompt_path.has_value()) {
-            current_system_prompt_ = read_file_contents(config_.system_prompt_path.value());
-        }
-        ChatMessage sys{
-            .role    = "system",
-            .content = current_system_prompt_,
-        };
-        messages_.insert(messages_.begin(), sys);
-        session_.appendMessage(sys);
-    } else {
-        current_system_prompt_ = messages_.front().content;
-    }
+    loadSessionContextIntoAgent();
 }
 
 AgentSession::~AgentSession() = default;
@@ -202,7 +169,7 @@ bool AgentSession::set_model(const std::string& model_id) {
     const std::string prev = current_model_;
     current_model_   = model_id;
     config_.model    = model_id;
-    session_.appendModelChange(config_.provider, model_id);
+    session_->appendModelChange(config_.provider, model_id);
     AgentEvent ev{};
     ev.type           = AgentEvent::Type::ModelChange;
     ev.previous_model = prev;
@@ -220,7 +187,7 @@ void AgentSession::set_thinking_level(ThinkingLevel level) {
     if (level == current_thinking_level_) return;
     const ThinkingLevel prev = current_thinking_level_;
     current_thinking_level_ = level;
-    session_.appendThinkingLevelChange(thinking_level_to_string(level));
+    session_->appendThinkingLevelChange(thinking_level_to_string(level));
     AgentEvent ev{};
     ev.type                    = AgentEvent::Type::ThinkingLevelChange;
     ev.previous_thinking_level = prev;
@@ -314,7 +281,7 @@ bool AgentSession::compact() {
             {"modified_files", sorted_file_list(stats.file_ops.modified_files)},
             {"tokens_after", stats.tokens_after},
         };
-        session_.appendCompaction(stats.summary, stats.first_kept_entry_id, stats.tokens_before,
+        session_->appendCompaction(stats.summary, stats.first_kept_entry_id, stats.tokens_before,
                                   std::make_optional(details));
         last_compaction_file_ops_.read_files.clear();
         last_compaction_file_ops_.modified_files.clear();
@@ -350,13 +317,119 @@ void AgentSession::set_event_handler(AgentEventHandler handler) {
     event_handler_ = std::move(handler);
 }
 
+void AgentSession::loadSessionContextIntoAgent() {
+    SessionContext ctx = session_->buildSessionContext();
+    messages_ = std::move(ctx.messages);
+    if (!ctx.model.modelId.empty()) {
+        current_model_   = ctx.model.modelId;
+        config_.model    = ctx.model.modelId;
+    }
+    if (!ctx.thinkingLevel.empty()) {
+        current_thinking_level_ = string_to_thinking_level(ctx.thinkingLevel);
+    }
+
+    if (messages_.empty() || messages_.front().role != "system") {
+        std::vector<ContextFile> context_files;
+        if (!config_.no_context_files) {
+            context_files = load_context_files(config_.cwd);
+        }
+        current_system_prompt_ = build_system_prompt(
+            config_.cwd,
+            config_.no_tools
+                ? std::vector<ToolDefinition>{}
+                : tools_.build_tool_definitions(),
+            context_files,
+            config_.append_system_prompts
+        );
+        if (config_.system_prompt_path.has_value()) {
+            current_system_prompt_ = read_file_contents(config_.system_prompt_path.value());
+        }
+        ChatMessage sys{
+            .role    = "system",
+            .content = current_system_prompt_,
+        };
+        messages_.insert(messages_.begin(), sys);
+        session_->appendMessage(sys);
+    } else {
+        current_system_prompt_ = messages_.front().content;
+    }
+}
+
+// ============================================================================
+// Session Switching
+// ============================================================================
+
+void AgentSession::switchSession(std::unique_ptr<SessionManager> new_session) {
+    session_               = std::move(new_session);
+    compaction_count_    = 0;
+    last_compaction_stats_ = {};
+    turn_index_          = 0;
+    loadSessionContextIntoAgent();
+}
+
+// ============================================================================
+// Branching
+// ============================================================================
+
+void AgentSession::branch() {
+    (void)branchWithSummary("Branch", std::nullopt);
+}
+
+void AgentSession::branchFrom(const std::string& branchFromId) {
+    if (!session_->getEntry(branchFromId).has_value()) {
+        std::cerr << "Error: entry not found: " << branchFromId << "\n";
+        return;
+    }
+    session_->branch(branchFromId);
+    loadSessionContextIntoAgent();
+    std::cout << "Active branch moved to entry " << branchFromId << "\n";
+}
+
+std::string AgentSession::branchWithSummary(const std::string& summary,
+                                             const std::optional<std::string>& branchFromId) {
+    std::string resultId;
+    if (branchFromId.has_value()) {
+        if (!session_->getEntry(branchFromId.value()).has_value()) {
+            std::cerr << "Error: entry not found: " << branchFromId.value() << "\n";
+            return "";
+        }
+        resultId = session_->branchWithSummary(branchFromId, summary);
+    } else {
+        auto leafId = session_->getLeafId();
+        if (!leafId.has_value()) {
+            std::cerr << "Error: no leaf entry to branch from\n";
+            return "";
+        }
+        resultId =
+            session_->branchWithSummary(std::make_optional(leafId.value()), summary);
+    }
+    loadSessionContextIntoAgent();
+    std::cout << "Branch created with summary, entry: " << resultId << "\n";
+    return resultId;
+}
+
+// ============================================================================
+// New Session
+// ============================================================================
+
+std::string AgentSession::createNewSession() {
+    auto newSessionMgr = SessionManager::create(config_.cwd, "");
+    if (!newSessionMgr) {
+        std::cerr << "Error: failed to create new session\n";
+        return "";
+    }
+    switchSession(std::move(newSessionMgr));
+    std::cout << "New session created: " << session_id() << "\n";
+    return session_id();
+}
+
 // ============================================================================
 // Session Info
 // ============================================================================
 
-std::string AgentSession::session_id()   const { return session_.getSessionId(); }
+std::string AgentSession::session_id()   const { return session_->getSessionId(); }
 std::string AgentSession::session_path() const {
-    const auto p = session_.getSessionFile();
+    const auto p = session_->getSessionFile();
     return p.has_value() ? *p : "";
 }
 int         AgentSession::compaction_count()      const { return compaction_count_; }
@@ -375,7 +448,7 @@ bool AgentSession::run_turn(const std::string& user_input,
         .role    = "user",
         .content = user_input,
     };
-    user.entry_id = session_.appendMessage(user);
+    user.entry_id = session_->appendMessage(user);
     messages_.push_back(user);
 
     AgentEvent ts_ev{};
@@ -411,7 +484,7 @@ bool AgentSession::run_turn(const std::string& user_input,
             .tool_calls   = response.tool_calls,
             .usage_tokens = response.completion_tokens,
         };
-        assistant.entry_id = session_.appendMessage(assistant);
+        assistant.entry_id = session_->appendMessage(assistant);
         messages_.push_back(assistant);
 
         // Per-turn token breakdown.
@@ -509,7 +582,7 @@ bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
             .content      = (result.ok ? "ok" : "error") + std::string(": ") + result.content,
             .tool_call_id = call.id,
         };
-        tool_msg.entry_id = session_.appendMessage(tool_msg);
+        tool_msg.entry_id = session_->appendMessage(tool_msg);
         messages_.push_back(tool_msg);
     }
     return true;
@@ -575,7 +648,7 @@ bool AgentSession::check_and_compact(const ChunkCallback& on_chunk) {
         if (config_.compaction_fail_fast) return false;
         on_chunk("[COMPACT] skipped: " + error + "\n");
         try {
-            const auto path = session_.getSessionFile();
+            const auto path = session_->getSessionFile();
             if (!path.has_value()) {
                 return true;
             }
@@ -605,7 +678,7 @@ bool AgentSession::check_and_compact(const ChunkCallback& on_chunk) {
             {"modified_files", sorted_file_list(stats.file_ops.modified_files)},
             {"tokens_after", stats.tokens_after},
         };
-        session_.appendCompaction(stats.summary, stats.first_kept_entry_id, stats.tokens_before,
+        session_->appendCompaction(stats.summary, stats.first_kept_entry_id, stats.tokens_before,
                                   std::make_optional(details));
         last_compaction_file_ops_.read_files.clear();
         last_compaction_file_ops_.modified_files.clear();

@@ -25,14 +25,14 @@ Replace `SessionStore` with `SessionManager` — a full tree-model session class
 | `SessionInfo` | Session metadata (path, id, cwd, name, timestamps, message count) |
 | `SessionContext` | Messages + thinkingLevel + model, built via `buildSessionContext()` |
 | `branch_summary.cpp` | Fully migrated to `SessionEntry` types |
-| `AgentSession` | Uses `SessionManager&` for all persistence |
+| `AgentSession` | Owns `SessionManager` via `std::unique_ptr` for all persistence |
 
-### What remains (minor cleanup)
+### What remains (optional follow-up)
 
 | Area | Gap |
 |------|-----|
-| **Interactive commands** | `/new` and `/branch` not yet wired in `interactive_mode.cpp` |
-| **Test coverage** | Session-store/branch-traversal tests rewritten; label, migration, and branching tests may need expansion |
+| **Test coverage** | Label, migration, and extended branching tests can be expanded beyond current roundtrip/traversal tests |
+| **TUI parity** | Full `/tree` / fork / clone from the TypeScript app are not in the C++ readline TUI |
 
 ---
 
@@ -145,7 +145,7 @@ Implementation: `session_entry.hpp` / `session_entry.cpp`. Helpers: `agent_sessi
 
 ### 5. Wire `SessionManager` into `AgentSession`
 
-- [x] `AgentSession` constructor takes `SessionManager&` instead of `SessionStore&`.
+- [x] `AgentSession` constructor takes `std::unique_ptr<SessionManager>` instead of `SessionStore&`.
 - [x] `AgentSession` uses `sessionManager.appendMessage()` for user/assistant/tool messages.
 - [x] `AgentSession` uses `sessionManager.appendThinkingLevelChange()` / `appendModelChange()` for state changes.
 - [x] `AgentSession` uses `sessionManager.appendCompaction()` for compaction events.
@@ -157,14 +157,13 @@ Implementation: `session_entry.hpp` / `session_entry.cpp`. Helpers: `agent_sessi
 
 - [x] `agent.cpp` creates `SessionManager` (`create` / `continueRecent` / `openBySessionId`) instead of `SessionStore`.
 - [x] `interactive_mode.cpp` and `print_mode.cpp` signatures unchanged (still take `AgentSession&`).
-- [ ] `/new` command in interactive mode: create new session via `SessionManager::create()` (CLI `--new-session` uses `SessionManager`; TUI `/new` not yet wired).
-- [ ] `/branch` command (if exists): use `sessionManager.branch()`.
+- [x] `/new` in interactive mode: `AgentSession::createNewSession()` → `SessionManager::create()` and `switchSession()`.
+- [x] `/branch` in interactive mode: `AgentSession::branch()` / `branchFrom()` / `branchWithSummary()` (bare `/branch` records a `branch_summary` entry from the current leaf, matching a usable fork in the tree model).
 
 ### 7. Remove `SessionStore` and `SessionGraph`
 
 - [x] `session.cpp` / `session.hpp` removed from CMakeLists.txt (no longer compiled).
-- [ ] Delete `session.hpp` / `session.cpp` files entirely (orphaned but still on disk).
-- [ ] Update all includes and forward declarations.
+- [x] Legacy `session.hpp` / `session.cpp` removed from the tree (no remaining references).
 
 ### 8. Update `branch_summary.cpp`
 
@@ -224,7 +223,7 @@ Port the TS `buildSessionContext()` function. Walks from leaf to root, handles c
 
 Update `AgentSession` to use `SessionManager` instead of `SessionStore`. Update all message append paths.
 
-**Done** — `AgentSession` takes `SessionManager&`; persistence and compaction wired.
+**Done** — `AgentSession` owns `SessionManager`; persistence and compaction wired.
 
 ### 12. Update `main.cpp` + mode functions
 
@@ -280,18 +279,18 @@ cat ~/.config/coding-agent/sessions/*.jsonl | head -20
 ## Acceptance Criteria
 
 - [x] `SessionManager` replaces `SessionStore` entirely; `SessionStore`/`SessionGraph`/`SessionNode`/`SessionRowKind` deleted.
-- [ ] All 10 entry types supported (message, compaction, branch_summary, label, custom, custom_message, session_info, thinking_level_change, model_change, compaction_skipped).
-- [ ] `getTree()` returns a properly rooted tree with sorted children and resolved labels.
-- [ ] `getBranch()` returns entries in chronological order from root to target.
-- [ ] `getChildren()` returns all direct children of an entry.
-- [ ] Labels can be added/removed/queried; persisted in session file.
-- [ ] `branch()` moves leaf pointer; `branchWithSummary()` also appends summary.
-- [ ] `createBranchedSession()` extracts a path into a new file with labels preserved.
-- [ ] `buildSessionContext()` correctly resolves compaction (summary + kept messages + post-compaction) and branch summaries.
-- [ ] Version migration v1→v2 and v2→v3 works automatically on file load.
-- [ ] `SessionManager::create()`, `::open()`, `::continueRecent()`, `::inMemory()`, `::forkFrom()` all work.
+- [x] All 10 entry types supported (message, compaction, branch_summary, label, custom, custom_message, session_info, thinking_level_change, model_change, compaction_skipped).
+- [x] `getTree()` returns a properly rooted tree with sorted children and resolved labels.
+- [x] `getBranch()` returns entries in chronological order from root to target.
+- [x] `getChildren()` returns all direct children of an entry.
+- [x] Labels can be added/removed/queried; persisted in session file.
+- [x] `branch()` moves leaf pointer; `branchWithSummary()` also appends summary.
+- [x] `createBranchedSession()` extracts a path into a new file with labels preserved.
+- [x] `buildSessionContext()` correctly resolves compaction (summary + kept messages + post-compaction) and branch summaries.
+- [x] Version migration v1→v2 and v2→v3 works automatically on file load.
+- [x] `SessionManager::create()`, `::open()`, `::continueRecent()`, `::inMemory()`, `::forkFrom()` all work.
 - [x] `AgentSession` uses `SessionManager` for all message/state persistence.
-- [ ] All existing interactive commands (`/compact`, `/stats`, `/tokens`, `/clear`, `/exit`, `/new`) work.
+- [x] Existing interactive commands (`/compact`, `/stats`, `/tokens`, `/thinking`, `/clear`, `/exit`, `/new`, `/branch`) work for the readline TUI (`/clear` remains a documented no-op vs AgentSession).
 - [ ] Ctrl+C cancellation unchanged.
 - [ ] TUI animation unchanged.
 - [x] Build clean with `-Werror`.

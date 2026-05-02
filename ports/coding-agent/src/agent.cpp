@@ -150,7 +150,7 @@ int run_agent(int argc, char** argv) {
         }
     }
 
-    AgentSession agent(make_session_config(config.value()), provider, tools, *session_mgr);
+    AgentSession agent(make_session_config(config.value()), provider, tools, std::move(session_mgr));
 
     if (should_run_print_mode(config.value())) {
         return run_print_mode(agent, config->prompt.value_or(""));

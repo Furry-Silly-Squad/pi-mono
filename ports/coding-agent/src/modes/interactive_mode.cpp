@@ -92,8 +92,11 @@ int run_interactive_mode(AgentSession& agent) {
                 ? static_cast<int>((static_cast<double>(total) / budget) * 100.0)
                 : 0;
 
+            const std::string session_file = agent.session_path();
             std::cout << "\n=== Session Stats ===\n"
                       << "Session ID:       " << agent.session_id() << "\n"
+                      << "Session file:     "
+                      << (session_file.empty() ? "(not persisted)" : session_file) << "\n"
                       << "Messages:         " << agent.message_count() << "\n"
                       << "Tokens:           " << total << " / " << budget
                       << " (" << pct << "%)\n"

@@ -105,7 +105,7 @@ add_executable(coding-agent-agent-session-test
   src/compaction.cpp
   src/context_loader.cpp
   src/file_ops.cpp
-  src/session.cpp
+  src/session_entry.cpp
   src/system_prompt.cpp
   src/tools/tool_registry.cpp
   src/tools/bash_tool.cpp

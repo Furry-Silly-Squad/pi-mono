@@ -2,9 +2,12 @@
 
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 
 #include <unistd.h>
+
+#include <nlohmann/json.hpp>
 
 #include "agent_session.hpp"
 #include "branch_summary.hpp"
@@ -13,6 +16,7 @@
 #include "modes/print_mode.hpp"
 #include "providers/llama_cpp_provider.hpp"
 #include "session.hpp"
+#include "session_entry.hpp"
 #include "tools/tool_registry.hpp"
 
 namespace coding_agent {
@@ -81,14 +85,14 @@ int run_agent(int argc, char** argv) {
         register_builtin_tools(tools);
     }
 
-    SessionStore session(config->cwd);
+    const std::string workspace_sessions = session_directory_for_cwd(config->cwd);
 
     // Branch summary: detect previous session and generate summary if needed.
     std::optional<std::filesystem::path> handoff_old_file;
     std::optional<std::string> handoff_old_leaf;
     if (config->branch_summary) {
         if (config->new_session) {
-            if (const auto prev = latest_session_path_in_dir(session.session_dir()); prev.has_value()) {
+            if (const auto prev = latest_session_path_in_dir(workspace_sessions); prev.has_value()) {
                 SessionGraph graph;
                 std::string graph_error;
                 if (load_session_graph(prev->string(), graph, graph_error) && !graph.leaf_id.empty()) {
@@ -97,7 +101,7 @@ int run_agent(int argc, char** argv) {
                 }
             }
         } else if (config->session_id.has_value()) {
-            if (const auto latest = latest_session_path_in_dir(session.session_dir()); latest.has_value()) {
+            if (const auto latest = latest_session_path_in_dir(workspace_sessions); latest.has_value()) {
                 if (latest->stem().string() != config->session_id.value()) {
                     SessionGraph graph;
                     std::string graph_error;
@@ -110,7 +114,19 @@ int run_agent(int argc, char** argv) {
         }
     }
 
-    session.start_or_resume(config->session_id, config->new_session);
+    std::unique_ptr<SessionManager> session_mgr;
+    if (config->new_session) {
+        session_mgr = SessionManager::create(config->cwd, "");
+    } else if (config->session_id.has_value()) {
+        session_mgr =
+            SessionManager::openBySessionId(config->cwd, config->session_id.value(), "");
+        if (!session_mgr) {
+            std::cerr << "Error: session not found: " << *config->session_id << "\n";
+            return 1;
+        }
+    } else {
+        session_mgr = SessionManager::continueRecent(config->cwd, "");
+    }
 
     if (config->branch_summary && handoff_old_file.has_value() && handoff_old_leaf.has_value()) {
         SessionGraph old_graph;
@@ -127,19 +143,17 @@ int run_agent(int argc, char** argv) {
                 config->compaction_reserve_tokens,
                 gen_error
             );
-            BranchSummaryEvent branch_event{
-                .summary              = branch_result.summary,
-                .source_session_id    = handoff_old_file->stem().string(),
-                .read_files           = branch_result.read_files,
-                .modified_files       = branch_result.modified_files,
-                .handoff_source_leaf_id = handoff_old_leaf.value(),
-            };
-            std::string append_error;
-            (void)session.append_branch_summary(branch_event, append_error);
+            nlohmann::json branch_details;
+            branch_details["source_session_id"]    = handoff_old_file->stem().string();
+            branch_details["read_files"]         = branch_result.read_files;
+            branch_details["modified_files"]     = branch_result.modified_files;
+            branch_details["handoff_source_leaf_id"] = handoff_old_leaf.value();
+            session_mgr->appendBranchSummary(handoff_old_leaf.value(), branch_result.summary,
+                                             std::make_optional(branch_details));
         }
     }
 
-    AgentSession agent(make_session_config(config.value()), provider, tools, session);
+    AgentSession agent(make_session_config(config.value()), provider, tools, *session_mgr);
 
     if (should_run_print_mode(config.value())) {
         return run_print_mode(agent, config->prompt.value_or(""));

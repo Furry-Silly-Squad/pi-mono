@@ -10,8 +10,9 @@
 
 #include "compaction.hpp"
 #include "config.hpp"
+#include "file_ops.hpp"
 #include "providers/provider.hpp"
-#include "session.hpp"
+#include "session_entry.hpp"
 #include "tools/tool_registry.hpp"
 
 namespace coding_agent {
@@ -128,7 +129,7 @@ class AgentSession {
     AgentSession(const AgentSessionConfig& config,
                  Provider& provider,
                  ToolRegistry& tools,
-                 SessionStore& session);
+                 SessionManager& session);
 
     ~AgentSession();
 
@@ -282,9 +283,10 @@ class AgentSession {
     AgentSessionConfig config_;
     Provider& provider_;
     ToolRegistry& tools_;
-    SessionStore& session_;
+    SessionManager& session_;
 
     std::vector<ChatMessage> messages_;
+    FileOps last_compaction_file_ops_;
     std::string current_model_;
     ThinkingLevel current_thinking_level_ = ThinkingLevel::Off;
     std::string current_system_prompt_;

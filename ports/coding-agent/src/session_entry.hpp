@@ -207,6 +207,12 @@ struct SessionInfo {
 
 using SessionListProgress = std::function<void(int loaded, int total)>;
 
+/// Root directory used by `SessionManager` (`~/.pi/agent/sessions`).
+std::string agent_sessions_root_directory();
+
+/// Per-workspace session directory (same layout as `SessionManager::create(..., "")`).
+std::string session_directory_for_cwd(const std::string& cwd);
+
 // ============================================================================
 // SessionManager — manages conversation sessions as append-only trees
 // ============================================================================
@@ -237,6 +243,11 @@ class SessionManager {
   static std::unique_ptr<SessionManager> forkFrom(const std::string& sourcePath,
                                                    const std::string& targetCwd,
                                                    const std::string& sessionDir = "");
+
+  /// Open an existing session whose header `id` matches `sessionId`, or `sessionDir/id.jsonl` if present.
+  static std::unique_ptr<SessionManager> openBySessionId(const std::string& cwd,
+                                                          const std::string& sessionId,
+                                                          const std::string& sessionDir = "");
 
   // --------------------------------------------------------------------------
   // Session lifecycle

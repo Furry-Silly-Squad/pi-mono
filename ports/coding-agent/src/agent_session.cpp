@@ -9,6 +9,7 @@
 #include "compaction.hpp"
 #include "context_loader.hpp"
 #include "file_ops.hpp"
+#include "session.hpp"
 #include "system_prompt.hpp"
 
 namespace coding_agent {
@@ -103,7 +104,7 @@ ThinkingLevel string_to_thinking_level(const std::string& str) {
 AgentSession::AgentSession(const AgentSessionConfig& config,
                            Provider& provider,
                            ToolRegistry& tools,
-                           SessionStore& session)
+                           SessionManager& session)
     : config_(config),
       provider_(provider),
       tools_(tools),
@@ -113,8 +114,15 @@ AgentSession::AgentSession(const AgentSessionConfig& config,
 
     active_tool_names_ = parse_tool_name_list(config_.initial_active_tools);
 
-    std::string load_error;
-    messages_ = session_.load_messages(load_error);
+    SessionContext ctx = session_.buildSessionContext();
+    messages_ = std::move(ctx.messages);
+    if (!ctx.model.modelId.empty()) {
+        current_model_   = ctx.model.modelId;
+        config_.model    = ctx.model.modelId;
+    }
+    if (!ctx.thinkingLevel.empty()) {
+        current_thinking_level_ = string_to_thinking_level(ctx.thinkingLevel);
+    }
 
     if (messages_.empty() || messages_.front().role != "system") {
         std::vector<ContextFile> context_files;
@@ -137,8 +145,7 @@ AgentSession::AgentSession(const AgentSessionConfig& config,
             .content = current_system_prompt_,
         };
         messages_.insert(messages_.begin(), sys);
-        std::string persist_error;
-        session_.append(sys, persist_error);
+        session_.appendMessage(sys);
     } else {
         current_system_prompt_ = messages_.front().content;
     }
@@ -195,6 +202,7 @@ bool AgentSession::set_model(const std::string& model_id) {
     const std::string prev = current_model_;
     current_model_   = model_id;
     config_.model    = model_id;
+    session_.appendModelChange(config_.provider, model_id);
     AgentEvent ev{};
     ev.type           = AgentEvent::Type::ModelChange;
     ev.previous_model = prev;
@@ -212,6 +220,7 @@ void AgentSession::set_thinking_level(ThinkingLevel level) {
     if (level == current_thinking_level_) return;
     const ThinkingLevel prev = current_thinking_level_;
     current_thinking_level_ = level;
+    session_.appendThinkingLevelChange(thinking_level_to_string(level));
     AgentEvent ev{};
     ev.type                    = AgentEvent::Type::ThinkingLevelChange;
     ev.previous_thinking_level = prev;
@@ -284,7 +293,7 @@ bool AgentSession::compact() {
         current_model_,
         config_.compaction_keep_recent_tokens,
         config_.compaction_reserve_tokens,
-        &session_.get_last_compaction_file_ops(),
+        &last_compaction_file_ops_,
         &stats,
         error
     );
@@ -300,7 +309,6 @@ bool AgentSession::compact() {
         last_compaction_stats_    = stats;
         compaction_count_++;
 
-        std::string persist_error;
         CompactionEvent event{
             .tokens_before         = stats.tokens_before,
             .tokens_after          = stats.tokens_after,
@@ -310,8 +318,21 @@ bool AgentSession::compact() {
             .read_files            = sorted_file_list(stats.file_ops.read_files),
             .modified_files        = sorted_file_list(stats.file_ops.modified_files),
         };
-        session_.append_compaction(event, persist_error);
-        session_.record_compaction(event);
+        nlohmann::json details{
+            {"read_files", event.read_files},
+            {"modified_files", event.modified_files},
+            {"tokens_after", event.tokens_after},
+        };
+        session_.appendCompaction(event.summary, event.first_kept_entry_id, event.tokens_before,
+                                  std::make_optional(details));
+        last_compaction_file_ops_.read_files.clear();
+        last_compaction_file_ops_.modified_files.clear();
+        for (const auto& p : stats.file_ops.read_files) {
+            last_compaction_file_ops_.read_files.insert(p);
+        }
+        for (const auto& p : stats.file_ops.modified_files) {
+            last_compaction_file_ops_.modified_files.insert(p);
+        }
     } else if (!ok) {
         end_ev.compaction_error = error;
     }
@@ -342,8 +363,11 @@ void AgentSession::set_event_handler(AgentEventHandler handler) {
 // Session Info
 // ============================================================================
 
-std::string AgentSession::session_id()   const { return session_.get_session_id(); }
-std::string AgentSession::session_path() const { return session_.get_session_path(); }
+std::string AgentSession::session_id()   const { return session_.getSessionId(); }
+std::string AgentSession::session_path() const {
+    const auto p = session_.getSessionFile();
+    return p.has_value() ? *p : "";
+}
 int         AgentSession::compaction_count()      const { return compaction_count_; }
 int         AgentSession::total_context_tokens()  const {
     return ::coding_agent::total_context_tokens(messages_);
@@ -360,10 +384,8 @@ bool AgentSession::run_turn(const std::string& user_input,
         .role    = "user",
         .content = user_input,
     };
-    user.entry_id = session_.assign_entry_id();
+    user.entry_id = session_.appendMessage(user);
     messages_.push_back(user);
-    std::string persist_error;
-    session_.append(user, persist_error);
 
     AgentEvent ts_ev{};
     ts_ev.type        = AgentEvent::Type::TurnStart;
@@ -398,9 +420,8 @@ bool AgentSession::run_turn(const std::string& user_input,
             .tool_calls   = response.tool_calls,
             .usage_tokens = response.completion_tokens,
         };
-        assistant.entry_id = session_.assign_entry_id();
+        assistant.entry_id = session_.appendMessage(assistant);
         messages_.push_back(assistant);
-        session_.append(assistant, persist_error);
 
         // Per-turn token breakdown.
         const int content_tok = response_content_tokens(response);
@@ -469,7 +490,6 @@ bool AgentSession::call_provider(const std::vector<ChatMessage>& history,
 
 bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
                                  const ChunkCallback& on_chunk) {
-    std::string persist_error;
     for (const auto& call : tool_calls) {
         AgentEvent call_ev{};
         call_ev.type         = AgentEvent::Type::ToolCall;
@@ -498,9 +518,8 @@ bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
             .content      = (result.ok ? "ok" : "error") + std::string(": ") + result.content,
             .tool_call_id = call.id,
         };
-        tool_msg.entry_id = session_.assign_entry_id();
+        tool_msg.entry_id = session_.appendMessage(tool_msg);
         messages_.push_back(tool_msg);
-        session_.append(tool_msg, persist_error);
     }
     return true;
 }
@@ -550,7 +569,7 @@ bool AgentSession::check_and_compact(const ChunkCallback& on_chunk) {
         current_model_,
         config_.compaction_keep_recent_tokens,
         config_.compaction_reserve_tokens,
-        &session_.get_last_compaction_file_ops(),
+        &last_compaction_file_ops_,
         &stats,
         error
     );
@@ -565,7 +584,11 @@ bool AgentSession::check_and_compact(const ChunkCallback& on_chunk) {
         if (config_.compaction_fail_fast) return false;
         on_chunk("[COMPACT] skipped: " + error + "\n");
         try {
-            std::ofstream out(session_.get_session_path(), std::ios::app);
+            const auto path = session_.getSessionFile();
+            if (!path.has_value()) {
+                return true;
+            }
+            std::ofstream out(path.value(), std::ios::app);
             out << nlohmann::json{
                     {"type", "compaction_skipped"},
                     {"reason", error},
@@ -586,7 +609,6 @@ bool AgentSession::check_and_compact(const ChunkCallback& on_chunk) {
         end_ev.tokens_after       = stats.tokens_after;
         end_ev.compaction_summary = stats.summary;
 
-        std::string persist_error;
         CompactionEvent event{
             .tokens_before       = stats.tokens_before,
             .tokens_after        = stats.tokens_after,
@@ -596,8 +618,21 @@ bool AgentSession::check_and_compact(const ChunkCallback& on_chunk) {
             .read_files          = sorted_file_list(stats.file_ops.read_files),
             .modified_files      = sorted_file_list(stats.file_ops.modified_files),
         };
-        session_.append_compaction(event, persist_error);
-        session_.record_compaction(event);
+        nlohmann::json details{
+            {"read_files", event.read_files},
+            {"modified_files", event.modified_files},
+            {"tokens_after", event.tokens_after},
+        };
+        session_.appendCompaction(event.summary, event.first_kept_entry_id, event.tokens_before,
+                                  std::make_optional(details));
+        last_compaction_file_ops_.read_files.clear();
+        last_compaction_file_ops_.modified_files.clear();
+        for (const auto& p : stats.file_ops.read_files) {
+            last_compaction_file_ops_.read_files.insert(p);
+        }
+        for (const auto& p : stats.file_ops.modified_files) {
+            last_compaction_file_ops_.modified_files.insert(p);
+        }
     }
 
     emit_event(end_ev.type, end_ev);

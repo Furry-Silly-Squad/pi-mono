@@ -12,6 +12,32 @@
 #include <unordered_set>
 
 namespace coding_agent {
+
+std::string agent_sessions_root_directory() {
+  const char* home = std::getenv("HOME");
+  if (home == nullptr) {
+    return ".pi/agent/sessions";
+  }
+  return (std::filesystem::path(home) / ".pi" / "agent" / "sessions").string();
+}
+
+std::string session_directory_for_cwd(const std::string& cwd) {
+  namespace fs = std::filesystem;
+  std::string safePath = "--";
+  if (!cwd.empty()) {
+    safePath += cwd;
+    for (auto& c : safePath) {
+      if (c == '/' || c == '\\' || c == ':') {
+        c = '-';
+      }
+    }
+  }
+  safePath += "--";
+  const fs::path sessionDir = fs::path(agent_sessions_root_directory()) / "sessions" / safePath;
+  fs::create_directories(sessionDir);
+  return sessionDir.string();
+}
+
 namespace {
 
 using nlohmann::json;
@@ -675,33 +701,6 @@ std::vector<SessionInfo> listSessionsFromDir(const std::string& dir,
   return sessions;
 }
 
-std::string getDefaultSessionDir(const std::string& cwd, const std::string& agentDir) {
-  namespace fs = std::filesystem;
-  std::string safePath = "--";
-  if (!cwd.empty()) {
-    safePath += cwd;
-    // Replace path separators and colons with hyphens
-    for (auto& c : safePath) {
-      if (c == '/' || c == '\\' || c == ':') {
-        c = '-';
-      }
-    }
-  }
-  safePath += "--";
-
-  const fs::path sessionDir = fs::path(agentDir) / "sessions" / safePath;
-  fs::create_directories(sessionDir);
-  return sessionDir.string();
-}
-
-std::string getSessionsDir() {
-  const char* home = std::getenv("HOME");
-  if (home == nullptr) {
-    return ".pi/agent/sessions";
-  }
-  return (std::filesystem::path(home) / ".pi" / "agent" / "sessions").string();
-}
-
 }  // namespace
 
 SessionContext buildSessionContext(const std::vector<SessionEntry>& entries,
@@ -732,7 +731,7 @@ SessionManager::SessionManager(const std::string& cwd,
 
 std::unique_ptr<SessionManager> SessionManager::create(const std::string& cwd,
                                                         const std::string& sessionDir) {
-  const std::string dir = sessionDir.empty() ? getDefaultSessionDir(cwd, getSessionsDir()) : sessionDir;
+  const std::string dir = sessionDir.empty() ? session_directory_for_cwd(cwd) : sessionDir;
   return std::unique_ptr<SessionManager>(new SessionManager(cwd, dir, std::nullopt, true));
 }
 
@@ -755,7 +754,7 @@ std::unique_ptr<SessionManager> SessionManager::open(const std::string& path,
 
 std::unique_ptr<SessionManager> SessionManager::continueRecent(const std::string& cwd,
                                                                 const std::string& sessionDir) {
-  const std::string dir = sessionDir.empty() ? getDefaultSessionDir(cwd, getSessionsDir()) : sessionDir;
+  const std::string dir = sessionDir.empty() ? session_directory_for_cwd(cwd) : sessionDir;
   const std::optional<std::string> mostRecent = findMostRecentSession(dir);
   if (mostRecent.has_value()) {
     return open(mostRecent.value(), dir, cwd);
@@ -786,7 +785,7 @@ std::unique_ptr<SessionManager> SessionManager::forkFrom(const std::string& sour
     throw std::runtime_error("Cannot fork: source session has no header: " + sourcePath);
   }
 
-  const std::string dir = sessionDir.empty() ? getDefaultSessionDir(targetCwd, getSessionsDir()) : sessionDir;
+  const std::string dir = sessionDir.empty() ? session_directory_for_cwd(targetCwd) : sessionDir;
   if (!std::filesystem::exists(dir)) {
     std::filesystem::create_directories(dir);
   }
@@ -819,6 +818,44 @@ std::unique_ptr<SessionManager> SessionManager::forkFrom(const std::string& sour
   }
 
   return open(newSessionFile, dir, targetCwd);
+}
+
+std::unique_ptr<SessionManager> SessionManager::openBySessionId(const std::string& cwd,
+                                                                 const std::string& sessionId,
+                                                                 const std::string& sessionDir) {
+  namespace fs = std::filesystem;
+  const std::string dir = sessionDir.empty() ? session_directory_for_cwd(cwd) : sessionDir;
+  if (!fs::exists(dir) || !fs::is_directory(dir)) {
+    return nullptr;
+  }
+
+  const fs::path legacy = fs::path(dir) / (sessionId + ".jsonl");
+  if (fs::exists(legacy)) {
+    return open(legacy.string(), sessionDir, cwd);
+  }
+
+  try {
+    for (const auto& entry : fs::directory_iterator(dir)) {
+      if (!entry.is_regular_file() || entry.path().extension() != ".jsonl") {
+        continue;
+      }
+      std::ifstream in(entry.path());
+      std::string line;
+      if (!std::getline(in, line) || line.empty()) {
+        continue;
+      }
+      const nlohmann::json j = nlohmann::json::parse(line, nullptr, false);
+      if (j.is_discarded() || j.value("type", "") != "session") {
+        continue;
+      }
+      if (j.value("id", "") == sessionId) {
+        return open(entry.path().string(), sessionDir, cwd);
+      }
+    }
+  } catch (...) {
+    return nullptr;
+  }
+  return nullptr;
 }
 
 std::optional<std::string> SessionManager::newSession(const NewSessionOptions& options) {
@@ -1420,7 +1457,7 @@ void SessionManager::_appendEntry(SessionEntry entry) {
 std::vector<SessionInfo> SessionManager::list(const std::string& cwd,
                                                const std::string& sessionDir,
                                                const SessionListProgress& onProgress) {
-  const std::string dir = sessionDir.empty() ? getDefaultSessionDir(cwd, getSessionsDir()) : sessionDir;
+  const std::string dir = sessionDir.empty() ? session_directory_for_cwd(cwd) : sessionDir;
   std::vector<SessionInfo> sessions = listSessionsFromDir(dir, onProgress, 0, 0);
   std::sort(sessions.begin(), sessions.end(),
             [](const SessionInfo& a, const SessionInfo& b) { return a.modified > b.modified; });
@@ -1428,7 +1465,7 @@ std::vector<SessionInfo> SessionManager::list(const std::string& cwd,
 }
 
 std::vector<SessionInfo> SessionManager::listAll(const SessionListProgress& onProgress) {
-  const std::string sessionsDir = getSessionsDir();
+  const std::string sessionsDir = agent_sessions_root_directory();
   namespace fs = std::filesystem;
 
   std::vector<SessionInfo> sessions;

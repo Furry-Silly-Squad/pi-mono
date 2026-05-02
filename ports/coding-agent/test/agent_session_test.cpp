@@ -30,7 +30,7 @@
 
 #include "compaction.hpp"
 #include "providers/provider.hpp"
-#include "session.hpp"
+#include "session_entry.hpp"
 #include "tools/tool.hpp"
 #include "tools/tool_registry.hpp"
 
@@ -182,14 +182,13 @@ bool test_lifecycle() {
   coding_agent::ToolRegistry tools;
   tools.register_tool(std::make_unique<EchoTool>());
 
-  coding_agent::SessionStore session(".", session_dir.string());
-  session.start_or_resume(std::nullopt, true);
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
 
   std::vector<coding_agent::AgentEvent::Type> event_types;
   std::string captured_chunks;
 
   {
-    coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools, session);
+    coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools, *session_mgr);
     agent.set_event_handler([&event_types](const coding_agent::AgentEvent& ev) {
       event_types.push_back(ev.type);
     });
@@ -221,11 +220,13 @@ bool test_lifecycle() {
   EXPECT(event_types[1] == coding_agent::AgentEvent::Type::ModelCallStart, "second event = ModelCallStart");
   EXPECT(event_types[2] == coding_agent::AgentEvent::Type::TurnEnd, "third event = TurnEnd");
 
-  // Reload via fresh AgentSession on the same dir/id and verify history is preserved.
+  // Reload via fresh AgentSession on the same file path and verify history is preserved.
   ScriptedProvider provider2;
-  coding_agent::SessionStore session2(".", session_dir.string());
-  session2.start_or_resume(session.get_session_id(), false);
-  coding_agent::AgentSession agent2(base_config(session_dir.string()), provider2, tools, session2);
+  const auto session_path = session_mgr->getSessionFile();
+  EXPECT(session_path.has_value(), "session must be persisted to a file");
+  auto session_mgr2 =
+      coding_agent::SessionManager::open(session_path.value(), session_dir.string(), session_dir.string());
+  coding_agent::AgentSession agent2(base_config(session_dir.string()), provider2, tools, *session_mgr2);
   EXPECT(agent2.message_count() == 3, "reloaded history preserved (system + user + assistant)");
   EXPECT(agent2.messages()[2].content == "hello back", "reloaded assistant content matches");
 
@@ -262,12 +263,11 @@ bool test_tool_flow() {
   tools.register_tool(std::move(echo_owned));
   tools.register_tool(std::make_unique<NoopTool>());
 
-  coding_agent::SessionStore session(".", session_dir.string());
-  session.start_or_resume(std::nullopt, true);
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
 
   auto cfg = base_config(session_dir.string());
   cfg.initial_active_tools = "echo";  // restrict to echo only
-  coding_agent::AgentSession agent(cfg, provider, tools, session);
+  coding_agent::AgentSession agent(cfg, provider, tools, *session_mgr);
 
   EXPECT(agent.active_tools().size() == 1 && agent.active_tools().front() == "echo",
          "active_tools should reflect initial_active_tools filter");
@@ -338,19 +338,16 @@ bool test_auto_compaction() {
   coding_agent::ToolRegistry tools;
   tools.register_tool(std::make_unique<EchoTool>());
 
-  coding_agent::SessionStore session(".", session_dir.string());
-  session.start_or_resume(std::nullopt, true);
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
 
   // Pre-seed the session with bulky messages so total tokens already exceed
   // (context_size - reserve_tokens) once the next assistant reply is appended.
-  std::string append_error;
   for (int i = 0; i < 6; ++i) {
     coding_agent::ChatMessage filler{
         .role = (i % 2 == 0 ? "user" : "assistant"),
         .content = pad_chars(200),
     };
-    filler.entry_id = session.assign_entry_id();
-    session.append(filler, append_error);
+    filler.entry_id = session_mgr->appendMessage(filler);
   }
 
   auto cfg = base_config(session_dir.string());
@@ -359,7 +356,7 @@ bool test_auto_compaction() {
   cfg.compaction_keep_recent_tokens = 64;
   cfg.max_tool_iterations = 1;  // single round
 
-  coding_agent::AgentSession agent(cfg, provider, tools, session);
+  coding_agent::AgentSession agent(cfg, provider, tools, *session_mgr);
   EXPECT(agent.message_count() >= 6, "history pre-seeded");
 
   std::vector<coding_agent::AgentEvent::Type> events;
@@ -407,24 +404,21 @@ bool test_manual_compact() {
   coding_agent::ToolRegistry tools;
   tools.register_tool(std::make_unique<EchoTool>());
 
-  coding_agent::SessionStore session(".", session_dir.string());
-  session.start_or_resume(std::nullopt, true);
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
 
-  std::string append_error;
   for (int i = 0; i < 8; ++i) {
     coding_agent::ChatMessage filler{
         .role = (i % 2 == 0 ? "user" : "assistant"),
         .content = pad_chars(300),
     };
-    filler.entry_id = session.assign_entry_id();
-    session.append(filler, append_error);
+    filler.entry_id = session_mgr->appendMessage(filler);
   }
 
   auto cfg = base_config(session_dir.string());
   cfg.context_size = 4096;
   cfg.compaction_reserve_tokens = 512;
   cfg.compaction_keep_recent_tokens = 128;
-  coding_agent::AgentSession agent(cfg, provider, tools, session);
+  coding_agent::AgentSession agent(cfg, provider, tools, *session_mgr);
 
   std::vector<coding_agent::AgentEvent::Type> events;
   agent.set_event_handler([&events](const coding_agent::AgentEvent& ev) {
@@ -454,10 +448,9 @@ bool test_interrupt_rolls_back_user() {
   coding_agent::ToolRegistry tools;
   tools.register_tool(std::make_unique<EchoTool>());
 
-  coding_agent::SessionStore session(".", session_dir.string());
-  session.start_or_resume(std::nullopt, true);
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
 
-  coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools, session);
+  coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools, *session_mgr);
   const size_t before = agent.message_count();
   EXPECT(before == 1, "only system message present");
 
@@ -483,10 +476,9 @@ bool test_thinking_and_model() {
   ScriptedProvider provider;
   coding_agent::ToolRegistry tools;
   tools.register_tool(std::make_unique<EchoTool>());
-  coding_agent::SessionStore session(".", session_dir.string());
-  session.start_or_resume(std::nullopt, true);
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
 
-  coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools, session);
+  coding_agent::AgentSession agent(base_config(session_dir.string()), provider, tools, *session_mgr);
 
   // Round-trip ThinkingLevel <-> string.
   using TL = coding_agent::ThinkingLevel;

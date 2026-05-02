@@ -74,96 +74,98 @@ Replace `SessionStore` with `SessionManager` — a full tree-model session class
 
 ### 3. `SessionManager` class (header + implementation)
 
+Implementation: `session_entry.hpp` / `session_entry.cpp`. Helpers: `agent_sessions_root_directory()`, `session_directory_for_cwd(cwd)`, `SessionManager::openBySessionId(cwd, sessionId, sessionDir?)`.
+
 **Construction / factories**
 
-- [ ] Private constructor: `(cwd, sessionDir, sessionFile, persist)`.
-- [ ] `static create(cwd, sessionDir?)` — new session with default session dir.
-- [ ] `static open(path, sessionDir?, cwdOverride?)` — load existing session file.
-- [ ] `static continueRecent(cwd, sessionDir?)` — find most recent `.jsonl` or create new.
-- [ ] `static inMemory(cwd)` — no file persistence.
-- [ ] `static forkFrom(sourcePath, targetCwd, sessionDir?)` — copy all entries from source into new session.
+- [x] Private constructor: `(cwd, sessionDir, sessionFile, persist)`.
+- [x] `static create(cwd, sessionDir?)` — new session with default session dir.
+- [x] `static open(path, sessionDir?, cwdOverride?)` — load existing session file.
+- [x] `static continueRecent(cwd, sessionDir?)` — find most recent `.jsonl` or create new.
+- [x] `static inMemory(cwd)` — no file persistence.
+- [x] `static forkFrom(sourcePath, targetCwd, sessionDir?)` — copy all entries from source into new session.
 
 **Session lifecycle**
 
-- [ ] `newSession(options?)` — create header, clear `fileEntries`/`byId`/`labelsById`, optionally set `sessionFile`.
-- [ ] `setSessionFile(path)` — load existing file, migrate if needed, build index.
-- [ ] `isPersisted()` — bool.
+- [x] `newSession(options?)` — create header, clear `fileEntries`/`byId`/`labelsById`, optionally set `sessionFile`.
+- [x] `setSessionFile(path)` — load existing file, migrate if needed, build index.
+- [x] `isPersisted()` — bool.
 
 **Entry append methods** (each appends as child of current `leafId`, advances leaf, returns entry id)
 
-- [ ] `appendMessage(message)` → `SessionMessageEntry`.
-- [ ] `appendCompaction(summary, firstKeptEntryId, tokensBefore, details?)` → `CompactionEntry`.
-- [ ] `appendBranchSummary(fromId, summary, details?)` → `BranchSummaryEntry`.
-- [ ] `appendLabelChange(targetId, label?)` → `LabelEntry` (updates `labelsById`).
-- [ ] `appendCustomEntry(customType, data?)` → `CustomEntry`.
-- [ ] `appendCustomMessageEntry(customType, content, display, details?)` → `CustomMessageEntry`.
-- [ ] `appendSessionInfo(name)` → `SessionInfoEntry`.
-- [ ] `appendThinkingLevelChange(level)` → `ThinkingLevelChangeEntry`.
-- [ ] `appendModelChange(provider, modelId)` → `ModelChangeEntry`.
+- [x] `appendMessage(message)` → `SessionMessageEntry`.
+- [x] `appendCompaction(summary, firstKeptEntryId, tokensBefore, details?)` → `CompactionEntry`.
+- [x] `appendBranchSummary(fromId, summary, details?)` → `BranchSummaryEntry`.
+- [x] `appendLabelChange(targetId, label?)` → `LabelEntry` (updates `labelsById`).
+- [x] `appendCustomEntry(customType, data?)` → `CustomEntry`.
+- [x] `appendCustomMessageEntry(customType, content, display, details?)` → `CustomMessageEntry`.
+- [x] `appendSessionInfo(name)` → `SessionInfoEntry`.
+- [x] `appendThinkingLevelChange(level)` → `ThinkingLevelChangeEntry`.
+- [x] `appendModelChange(provider, modelId)` → `ModelChangeEntry`.
 
 **Tree traversal**
 
-- [ ] `getLeafId()` / `getLeafEntry()` — current leaf access.
-- [ ] `getEntry(id)` — fast lookup via `byId`.
-- [ ] `getChildren(parentId)` — all direct children of an entry.
-- [ ] `getBranch(fromId?)` — walk from entry to root, return entries in chronological order.
-- [ ] `getTree()` — build `SessionTreeNode` tree, resolve labels, sort children by timestamp.
-- [ ] `getLabel(id)` / `getEntries()` / `getHeader()`.
+- [x] `getLeafId()` / `getLeafEntry()` — current leaf access.
+- [x] `getEntry(id)` — fast lookup via `byId`.
+- [x] `getChildren(parentId)` — all direct children of an entry.
+- [x] `getBranch(fromId?)` — walk from entry to root, return entries in chronological order.
+- [x] `getTree()` — build `SessionTreeNode` tree, resolve labels, sort children by timestamp.
+- [x] `getLabel(id)` / `getEntries()` / `getHeader()`.
 
 **Label management**
 
-- [ ] `labelsById` map (id → label) + `labelTimestampsById` map.
-- [ ] `appendLabelChange()` updates both maps and persists.
-- [ ] `getLabel()` reads from map.
-- [ ] Labels are preserved in `createBranchedSession()`.
+- [x] `labelsById` map (id → label) + `labelTimestampsById` map.
+- [x] `appendLabelChange()` updates both maps and persists.
+- [x] `getLabel()` reads from map.
+- [x] Labels are preserved in `createBranchedSession()`.
 
 **Branching**
 
-- [ ] `branch(branchFromId)` — set `leafId` to target entry.
-- [ ] `resetLeaf()` — set `leafId` to `nullptr` (before any entries).
-- [ ] `branchWithSummary(branchFromId?, summary, details?)` — same as `branch()` + append `BranchSummaryEntry`.
-- [ ] `createBranchedSession(leafId)` — extract path to leaf into a new session file, preserving labels.
+- [x] `branch(branchFromId)` — set `leafId` to target entry.
+- [x] `resetLeaf()` — set `leafId` to `nullptr` (before any entries).
+- [x] `branchWithSummary(branchFromId?, summary, details?)` — same as `branch()` + append `BranchSummaryEntry`.
+- [x] `createBranchedSession(leafId)` — extract path to leaf into a new session file, preserving labels.
 
 **Persistence**
 
-- [ ] `fileEntries` vector (all entries including header).
-- [ ] `byId` map for fast lookup.
-- [ ] `_persist(entry)` — append-only or flush-on-first-assistant logic.
-- [ ] `_rewriteFile()` — write all `fileEntries` to session file.
-- [ ] `flushed` flag for deferred write until first assistant message.
+- [x] `fileEntries` vector (all entries including header).
+- [x] `byId` map for fast lookup.
+- [x] `_persist(entry)` — append-only or flush-on-first-assistant logic.
+- [x] `_rewriteFile()` — write all `fileEntries` to session file.
+- [x] `flushed` flag for deferred write until first assistant message.
 
 **Migration**
 
-- [ ] `CURRENT_SESSION_VERSION = 3`.
-- [ ] `migrateToCurrentVersion(fileEntries)` — v1→v2 (add id/parentId), v2→v3 (rename hookMessage role).
-- [ ] Auto-run on `setSessionFile()` if loaded file has older version.
+- [x] `CURRENT_SESSION_VERSION = 3`.
+- [x] `migrateToCurrentVersion(fileEntries)` — v1→v2 (add id/parentId), v2→v3 (rename hookMessage role).
+- [x] Auto-run on `setSessionFile()` if loaded file has older version.
 
 **Session info**
 
-- [ ] `getSessionName()` — walk entries in reverse to find latest `session_info` entry.
-- [ ] `buildSessionInfo(filePath)` — compute `SessionInfo` (messageCount, firstMessage, timestamps).
-- [ ] `list(cwd, sessionDir?, onProgress?)` — list all sessions for a directory.
-- [ ] `listAll(onProgress?)` — list all sessions across all project directories.
+- [x] `getSessionName()` — walk entries in reverse to find latest `session_info` entry.
+- [x] `buildSessionInfo(filePath)` — compute `SessionInfo` (messageCount, firstMessage, timestamps).
+- [x] `list(cwd, sessionDir?, onProgress?)` — list all sessions for a directory.
+- [x] `listAll(onProgress?)` — list all sessions across all project directories.
 
 ### 4. `buildSessionContext()` equivalent
 
-- [ ] Port `buildSessionContext(entries, leafId?, byId?)` from TS: walks from leaf to root, collects messages, handles compaction (summary + kept messages + post-compaction messages), handles branch summaries and custom messages.
+- [x] Port `buildSessionContext(entries, leafId?, byId?)` from TS: walks from leaf to root, collects messages, handles compaction (summary + kept messages + post-compaction messages), handles branch summaries and custom messages.
 
 ### 5. Wire `SessionManager` into `AgentSession`
 
-- [ ] `AgentSession` constructor takes `SessionManager&` instead of `SessionStore&`.
-- [ ] `AgentSession` uses `sessionManager.appendMessage()` for user/assistant/tool messages.
-- [ ] `AgentSession` uses `sessionManager.appendThinkingLevelChange()` / `appendModelChange()` for state changes.
-- [ ] `AgentSession` uses `sessionManager.appendCompaction()` for compaction events.
-- [ ] `AgentSession::session_id()` delegates to `sessionManager.getSessionId()`.
-- [ ] `AgentSession::session_path()` delegates to `sessionManager.getSessionFile()`.
-- [ ] `AgentSession::messages()` delegates to `sessionManager.buildSessionContext().messages`.
+- [x] `AgentSession` constructor takes `SessionManager&` instead of `SessionStore&`.
+- [x] `AgentSession` uses `sessionManager.appendMessage()` for user/assistant/tool messages.
+- [x] `AgentSession` uses `sessionManager.appendThinkingLevelChange()` / `appendModelChange()` for state changes.
+- [x] `AgentSession` uses `sessionManager.appendCompaction()` for compaction events.
+- [x] `AgentSession::session_id()` delegates to `sessionManager.getSessionId()`.
+- [x] `AgentSession::session_path()` delegates to `sessionManager.getSessionFile()`.
+- [x] In-memory `messages_` is initialized from `sessionManager.buildSessionContext()` and updated each turn (same observable behavior as loading via `SessionStore`).
 
 ### 6. Update `main.cpp` and mode functions
 
-- [ ] `agent.cpp` creates `SessionManager` instead of `SessionStore`.
-- [ ] `interactive_mode.cpp` and `print_mode.cpp` signatures unchanged (still take `AgentSession&`).
-- [ ] `/new` command in interactive mode: create new session via `SessionManager::create()`.
+- [x] `agent.cpp` creates `SessionManager` (`create` / `continueRecent` / `openBySessionId`) instead of `SessionStore`.
+- [x] `interactive_mode.cpp` and `print_mode.cpp` signatures unchanged (still take `AgentSession&`).
+- [ ] `/new` command in interactive mode: create new session via `SessionManager::create()` (CLI `--new-session` uses `SessionManager`; TUI `/new` may still need wiring).
 - [ ] `/branch` command (if exists): use `sessionManager.branch()`.
 
 ### 7. Remove `SessionStore` and `SessionGraph`
@@ -183,7 +185,7 @@ Replace `SessionStore` with `SessionManager` — a full tree-model session class
 
 ### 9. Build clean with `-Werror`
 
-- [ ] Zero errors, zero new warnings.
+- [x] Zero errors, zero new warnings (port builds with `-Werror`).
 
 ---
 
@@ -233,9 +235,13 @@ Port the TS `buildSessionContext()` function. Walks from leaf to root, handles c
 
 Update `AgentSession` to use `SessionManager` instead of `SessionStore`. Update all message append paths.
 
+**Done** — `AgentSession` takes `SessionManager&`; persistence and compaction wired.
+
 ### 12. Update `main.cpp` + mode functions
 
 Update `agent.cpp` to create `SessionManager`. Ensure interactive/print modes work unchanged.
+
+**Done** — `run_agent` constructs `SessionManager` and passes it to `AgentSession`; branch-summary handoff uses `appendBranchSummary`.
 
 ### 13. Update `branch_summary.cpp`
 
@@ -295,11 +301,11 @@ cat ~/.config/coding-agent/sessions/*.jsonl | head -20
 - [ ] `buildSessionContext()` correctly resolves compaction (summary + kept messages + post-compaction) and branch summaries.
 - [ ] Version migration v1→v2 and v2→v3 works automatically on file load.
 - [ ] `SessionManager::create()`, `::open()`, `::continueRecent()`, `::inMemory()`, `::forkFrom()` all work.
-- [ ] `AgentSession` uses `SessionManager` for all message/state persistence.
+- [x] `AgentSession` uses `SessionManager` for all message/state persistence.
 - [ ] All existing interactive commands (`/compact`, `/stats`, `/tokens`, `/clear`, `/exit`, `/new`) work.
 - [ ] Ctrl+C cancellation unchanged.
 - [ ] TUI animation unchanged.
-- [ ] Build clean with `-Werror`.
+- [x] Build clean with `-Werror`.
 - [ ] All tests pass (including rewritten + new tests).
 
 ---

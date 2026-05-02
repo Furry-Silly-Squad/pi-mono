@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "compaction.hpp"
 #include "providers/provider.hpp"
 
@@ -137,7 +139,7 @@ struct CustomMessageEntry : SessionEntryBase {
 };
 
 // ============================================================================
-// Session entry — tagged union of all entry types
+// Session entry — tagged union of all entry types (non-header)
 // ============================================================================
 
 using SessionEntry = std::variant<

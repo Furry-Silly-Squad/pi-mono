@@ -48,24 +48,29 @@ Replace `SessionStore` with `SessionManager` — a full tree-model session class
 
 ### 1. New types and enums
 
-- [ ] `SessionEntry` — polymorphic-like tagged union (use `std::variant` or a struct with `type` discriminator + optional fields, matching TS `SessionEntry` union).
-- [ ] `SessionHeader` — `type`, `version`, `id`, `timestamp`, `cwd`, `parentSession`.
-- [ ] `SessionMessageEntry` — `type`, `id`, `parentId`, `timestamp`, `message` (ChatMessage).
-- [ ] `CompactionEntry` — `type`, `id`, `parentId`, `timestamp`, `summary`, `firstKeptEntryId`, `tokensBefore`, optional `details`.
-- [ ] `BranchSummaryEntry` — `type`, `id`, `parentId`, `timestamp`, `fromId`, `summary`, optional `details`.
-- [ ] `LabelEntry` — `type`, `id`, `parentId`, `timestamp`, `targetId`, `label`.
-- [ ] `CustomEntry` — `type`, `id`, `parentId`, `timestamp`, `customType`, optional `data` (nlohmann::json).
-- [ ] `CustomMessageEntry` — `type`, `id`, `parentId`, `timestamp`, `customType`, `content`, `display`, optional `details`.
-- [ ] `SessionInfoEntry` — `type`, `id`, `parentId`, `timestamp`, optional `name`.
-- [ ] `ThinkingLevelChangeEntry` — `type`, `id`, `parentId`, `timestamp`, `thinkingLevel`.
-- [ ] `ModelChangeEntry` — `type`, `id`, `parentId`, `timestamp`, `provider`, `modelId`.
-- [ ] `SessionTreeNode` — `entry`, `children`, optional `label`, optional `labelTimestamp`.
-- [ ] `SessionInfo` — `path`, `id`, `cwd`, `name`, `parentSessionPath`, `created`, `modified`, `messageCount`, `firstMessage`, `allMessagesText`.
+- [x] `SessionEntry` — `std::variant` of all 9 entry types.
+- [x] `SessionHeader` — `type`, `version`, `id`, `timestamp`, `cwd`, `parentSession`.
+- [x] `SessionMessageEntry` — `type`, `id`, `parentId`, `timestamp`, `message` (ChatMessage).
+- [x] `CompactionEntry` — `type`, `id`, `parentId`, `timestamp`, `summary`, `firstKeptEntryId`, `tokensBefore`, optional `details`.
+- [x] `BranchSummaryEntry` — `type`, `id`, `parentId`, `timestamp`, `fromId`, `summary`, optional `details`.
+- [x] `LabelEntry` — `type`, `id`, `parentId`, `timestamp`, `targetId`, `label`.
+- [x] `CustomEntry` — `type`, `id`, `parentId`, `timestamp`, `customType`, optional `data` (nlohmann::json).
+- [x] `CustomMessageEntry` — `type`, `id`, `parentId`, `timestamp`, `customType`, `content`, `display`, optional `details`.
+- [x] `SessionInfoEntry` — `type`, `id`, `parentId`, `timestamp`, optional `name`.
+- [x] `ThinkingLevelChangeEntry` — `type`, `id`, `parentId`, `timestamp`, `thinkingLevel`.
+- [x] `ModelChangeEntry` — `type`, `id`, `parentId`, `timestamp`, `provider`, `modelId`.
+- [x] `SessionTreeNode` — `entry`, `children`, optional `label`, optional `labelTimestamp`.
+- [x] `SessionInfo` — `path`, `id`, `cwd`, `name`, `parentSessionPath`, `created`, `modified`, `messageCount`, `firstMessage`, `allMessagesText`.
+- [x] `SessionContext` — `messages`, `thinkingLevel`, `model`.
+- [x] `SessionListProgress` — callback type.
+- [x] `FileEntry` — flattened `std::variant` of header + all entry types.
 
 ### 2. Entry ID generation
 
-- [ ] `generateId(std::unordered_set<std::string>& used_ids)` — 8-hex-char collision-checked IDs, fallback to full UUID.
-- [ ] Replace global `entry_counter` approach with per-session `byId` index.
+- [x] `generateId(std::unordered_set<std::string>& used_ids)` — 8-hex-char collision-checked IDs, fallback to full UUID.
+- [x] `nowTimestamp()` — ISO 8601 UTC timestamp.
+- [x] `sessionIdPrefix()` — millisecond timestamp prefix for session IDs.
+- [x] Per-session `byId` index replaces global `entry_counter`.
 
 ### 3. `SessionManager` class (header + implementation)
 

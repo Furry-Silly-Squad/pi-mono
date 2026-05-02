@@ -15,7 +15,6 @@
 #include "modes/interactive_mode.hpp"
 #include "modes/print_mode.hpp"
 #include "providers/llama_cpp_provider.hpp"
-#include "session.hpp"
 #include "session_entry.hpp"
 #include "tools/tool_registry.hpp"
 

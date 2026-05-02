@@ -9,7 +9,6 @@
 #include "compaction.hpp"
 #include "context_loader.hpp"
 #include "file_ops.hpp"
-#include "session.hpp"
 #include "session_entry.hpp"
 #include "system_prompt.hpp"
 
@@ -310,21 +309,12 @@ bool AgentSession::compact() {
         last_compaction_stats_    = stats;
         compaction_count_++;
 
-        CompactionEvent event{
-            .tokens_before         = stats.tokens_before,
-            .tokens_after          = stats.tokens_after,
-            .first_kept_index      = -1,
-            .first_kept_entry_id   = stats.first_kept_entry_id,
-            .summary               = stats.summary,
-            .read_files            = sorted_file_list(stats.file_ops.read_files),
-            .modified_files        = sorted_file_list(stats.file_ops.modified_files),
-        };
         nlohmann::json details{
-            {"read_files", event.read_files},
-            {"modified_files", event.modified_files},
-            {"tokens_after", event.tokens_after},
+            {"read_files", sorted_file_list(stats.file_ops.read_files)},
+            {"modified_files", sorted_file_list(stats.file_ops.modified_files)},
+            {"tokens_after", stats.tokens_after},
         };
-        session_.appendCompaction(event.summary, event.first_kept_entry_id, event.tokens_before,
+        session_.appendCompaction(stats.summary, stats.first_kept_entry_id, stats.tokens_before,
                                   std::make_optional(details));
         last_compaction_file_ops_.read_files.clear();
         last_compaction_file_ops_.modified_files.clear();
@@ -610,21 +600,12 @@ bool AgentSession::check_and_compact(const ChunkCallback& on_chunk) {
         end_ev.tokens_after       = stats.tokens_after;
         end_ev.compaction_summary = stats.summary;
 
-        CompactionEvent event{
-            .tokens_before       = stats.tokens_before,
-            .tokens_after        = stats.tokens_after,
-            .first_kept_index    = -1,
-            .first_kept_entry_id = stats.first_kept_entry_id,
-            .summary             = stats.summary,
-            .read_files          = sorted_file_list(stats.file_ops.read_files),
-            .modified_files      = sorted_file_list(stats.file_ops.modified_files),
-        };
         nlohmann::json details{
-            {"read_files", event.read_files},
-            {"modified_files", event.modified_files},
-            {"tokens_after", event.tokens_after},
+            {"read_files", sorted_file_list(stats.file_ops.read_files)},
+            {"modified_files", sorted_file_list(stats.file_ops.modified_files)},
+            {"tokens_after", stats.tokens_after},
         };
-        session_.appendCompaction(event.summary, event.first_kept_entry_id, event.tokens_before,
+        session_.appendCompaction(stats.summary, stats.first_kept_entry_id, stats.tokens_before,
                                   std::make_optional(details));
         last_compaction_file_ops_.read_files.clear();
         last_compaction_file_ops_.modified_files.clear();

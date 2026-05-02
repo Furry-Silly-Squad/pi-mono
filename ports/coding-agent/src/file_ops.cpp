@@ -78,4 +78,23 @@ std::string build_file_ops_footer(const FileOps& file_ops) {
   return out.str();
 }
 
+std::optional<std::filesystem::path> latest_session_path_in_dir(const std::string& session_dir) {
+  namespace fs = std::filesystem;
+  if (!fs::exists(session_dir) || !fs::is_directory(session_dir)) {
+    return std::nullopt;
+  }
+  fs::file_time_type newest_time;
+  std::optional<fs::path> latest;
+  for (const auto& entry : fs::directory_iterator(session_dir)) {
+    if (!entry.is_regular_file() || entry.path().extension() != ".jsonl") {
+      continue;
+    }
+    if (!latest.has_value() || entry.last_write_time() > newest_time) {
+      newest_time = entry.last_write_time();
+      latest = entry.path();
+    }
+  }
+  return latest;
+}
+
 }  // namespace coding_agent

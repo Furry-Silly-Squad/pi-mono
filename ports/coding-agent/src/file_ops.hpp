@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -18,5 +19,8 @@ void merge_file_ops(FileOps& dst, const FileOps& src);
 
 std::vector<std::string> sorted_file_list(const std::unordered_set<std::string>& files);
 std::string build_file_ops_footer(const FileOps& file_ops);
+
+/// Most recently modified `.jsonl` session file in a directory, if any.
+std::optional<std::filesystem::path> latest_session_path_in_dir(const std::string& session_dir);
 
 }  // namespace coding_agent

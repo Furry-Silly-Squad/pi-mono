@@ -29,7 +29,8 @@ ToolResult GrepTool::execute(const std::string& args_json, const std::string& cw
 
     std::array<char, 4096> buffer{};
     std::string output;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+    auto pclose_deleter = [](FILE* fp) { pclose(fp); };
+    std::unique_ptr<FILE, decltype(pclose_deleter)> pipe(popen(command.c_str(), "r"), pclose_deleter);
     if (!pipe) {
       return {.ok = false, .content = "Failed to start rg"};
     }

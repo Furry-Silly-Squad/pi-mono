@@ -55,7 +55,7 @@ struct StreamState {
   ChatResponse* response;
   ChunkCallback on_chunk;
   std::string error;
-  std::vector<size_t> tool_call_fragment_counts;
+  std::vector<size_t> tool_call_fragment_counts = {};
   bool usage_extracted = false;
   std::atomic<bool>* cancel_flag = nullptr;
   CURL* curl_handle = nullptr;  // Store curl handle for cancellation
@@ -320,8 +320,8 @@ bool LlamaCppProvider::chat(
 
   // Set up cancellation via progress callback
   if (cancel_flag != nullptr) {
-    curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, progress_callback);
-    curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, cancel_flag);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, cancel_flag);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
   }
 

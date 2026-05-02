@@ -31,7 +31,6 @@ Replace `SessionStore` with `SessionManager` — a full tree-model session class
 
 | Area | Gap |
 |------|-----|
-| **Old files** | ~~`session.cpp`/`session.hpp` still on disk but not compiled (orphaned, ~597 lines)~~ ✅ Deleted in commit 4594de1c |
 | **Interactive commands** | `/new` and `/branch` not yet wired in `interactive_mode.cpp` |
 | **Test coverage** | Session-store/branch-traversal tests rewritten; label, migration, and branching tests may need expansion |
 
@@ -280,7 +279,7 @@ cat ~/.config/coding-agent/sessions/*.jsonl | head -20
 
 ## Acceptance Criteria
 
-- [ ] `SessionManager` replaces `SessionStore` entirely; `SessionStore`/`SessionGraph`/`SessionNode`/`SessionRowKind` deleted.
+- [x] `SessionManager` replaces `SessionStore` entirely; `SessionStore`/`SessionGraph`/`SessionNode`/`SessionRowKind` deleted.
 - [ ] All 10 entry types supported (message, compaction, branch_summary, label, custom, custom_message, session_info, thinking_level_change, model_change, compaction_skipped).
 - [ ] `getTree()` returns a properly rooted tree with sorted children and resolved labels.
 - [ ] `getBranch()` returns entries in chronological order from root to target.

@@ -133,7 +133,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .append_system_prompts = {},
       .session_id = std::nullopt,
       .prompt = std::nullopt,
-      .max_tokens = 512,
+      .max_tokens = 8192,
       .context_size = 262144,
       .compaction_reserve_tokens = 16384,
       .compaction_keep_recent_tokens = 20000,

@@ -333,8 +333,10 @@ class SessionManager {
   /// Get all direct children of an entry.
   std::vector<SessionEntry> getChildren(const std::string& parentId) const;
 
-  /// Walk from entry to root, returning all entries in path order (chronological).
-  std::vector<SessionEntry> getBranch(const std::string* fromId = nullptr) const;
+  /// Walk from entry to root, returning all entries in path order (oldest first).
+  /// Pass `std::nullopt` to start from the current leaf.
+  [[nodiscard]] std::vector<SessionEntry> getBranch(
+      std::optional<std::string> from_entry_id = std::nullopt) const;
 
   /// Get all session entries (excludes header). Returns a shallow copy.
   std::vector<SessionEntry> getEntries() const;

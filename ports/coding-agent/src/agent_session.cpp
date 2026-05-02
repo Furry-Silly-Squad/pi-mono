@@ -10,6 +10,7 @@
 #include "context_loader.hpp"
 #include "file_ops.hpp"
 #include "session.hpp"
+#include "session_entry.hpp"
 #include "system_prompt.hpp"
 
 namespace coding_agent {

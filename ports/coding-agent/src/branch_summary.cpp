@@ -68,40 +68,41 @@ int estimate_chat_tokens(const ChatMessage& message) {
   return total;
 }
 
-ChatMessage entry_to_chat_message(const SessionNode& node) {
-  switch (node.kind) {
-    case SessionRowKind::Message:
-      return node.message;
-    case SessionRowKind::Compaction:
-      if (!node.compaction.has_value()) {
-        return ChatMessage{};
-      }
-      {
-        const CompactionEvent& ev = node.compaction.value();
-        return ChatMessage{
-            .role = "assistant",
-            .content = "Compaction summary (tokens before: " + std::to_string(ev.tokens_before) + "):\n" + ev.summary,
-            .tool_call_id = std::nullopt,
-            .tool_calls = {},
-            .entry_id = std::nullopt,
-            .usage_tokens = 0,
-        };
-      }
-    case SessionRowKind::BranchSummary:
-      if (!node.branch.has_value()) {
-        return ChatMessage{};
-      }
-      return ChatMessage{
-          .role = "assistant",
-          .content = node.branch->summary,
-          .tool_call_id = std::nullopt,
-          .tool_calls = {},
-          .entry_id = std::nullopt,
-          .usage_tokens = 0,
-      };
-    default:
-      return ChatMessage{};
+ChatMessage entry_to_chat_message(const SessionEntry& entry) {
+  if (auto* msg = std::get_if<SessionMessageEntry>(&entry)) {
+    return msg->message;
   }
+  if (auto* comp = std::get_if<CompactionEntry>(&entry)) {
+    return ChatMessage{
+        .role = "assistant",
+        .content = "Compaction summary (tokens before: " + std::to_string(comp->tokensBefore) + "):\n" + comp->summary,
+        .tool_call_id = std::nullopt,
+        .tool_calls = {},
+        .entry_id = std::nullopt,
+        .usage_tokens = 0,
+    };
+  }
+  if (auto* bs = std::get_if<BranchSummaryEntry>(&entry)) {
+    return ChatMessage{
+        .role = "assistant",
+        .content = bs->summary,
+        .tool_call_id = std::nullopt,
+        .tool_calls = {},
+        .entry_id = std::nullopt,
+        .usage_tokens = 0,
+    };
+  }
+  if (auto* cme = std::get_if<CustomMessageEntry>(&entry)) {
+    return ChatMessage{
+        .role = "assistant",
+        .content = cme->content,
+        .tool_call_id = std::nullopt,
+        .tool_calls = {},
+        .entry_id = std::nullopt,
+        .usage_tokens = 0,
+    };
+  }
+  return ChatMessage{};
 }
 
 std::string serialize_conversation(const std::vector<ChatMessage>& messages) {
@@ -127,30 +128,30 @@ std::string serialize_conversation(const std::vector<ChatMessage>& messages) {
   return out.str();
 }
 
-void merge_row_file_ops(FileOps& dst, const SessionNode& node) {
-  if (node.kind == SessionRowKind::Compaction && node.compaction.has_value()) {
-    for (const auto& p : node.compaction->read_files) {
+void merge_entry_file_ops(FileOps& dst, const SessionEntry& entry) {
+  if (auto* comp = std::get_if<CompactionEntry>(&entry)) {
+    for (const auto& p : comp->details ? comp->details->value("read_files", json::array()).get<std::vector<std::string>>() : std::vector<std::string>()) {
       dst.read_files.insert(p);
     }
-    for (const auto& p : node.compaction->modified_files) {
+    for (const auto& p : comp->details ? comp->details->value("modified_files", json::array()).get<std::vector<std::string>>() : std::vector<std::string>()) {
       dst.modified_files.insert(p);
     }
   }
-  if (node.kind == SessionRowKind::BranchSummary && node.branch.has_value()) {
-    for (const auto& p : node.branch->read_files) {
+  if (auto* bs = std::get_if<BranchSummaryEntry>(&entry)) {
+    for (const auto& p : bs->details ? bs->details->value("read_files", json::array()).get<std::vector<std::string>>() : std::vector<std::string>()) {
       dst.read_files.insert(p);
     }
-    for (const auto& p : node.branch->modified_files) {
+    for (const auto& p : bs->details ? bs->details->value("modified_files", json::array()).get<std::vector<std::string>>() : std::vector<std::string>()) {
       dst.modified_files.insert(p);
     }
   }
 }
 
-BranchSummaryData fallback_snippet_from_entries(const std::vector<SessionNode>& entries) {
+BranchSummaryData fallback_snippet_from_entries(const std::vector<SessionEntry>& entries) {
   std::vector<ChatMessage> linear;
-  for (const auto& node : entries) {
-    if (node.kind == SessionRowKind::Message) {
-      linear.push_back(node.message);
+  for (const auto& entry : entries) {
+    if (std::holds_alternative<SessionMessageEntry>(entry)) {
+      linear.push_back(std::get<SessionMessageEntry>(entry).message);
     }
   }
   std::vector<std::string> snippets;
@@ -170,10 +171,10 @@ BranchSummaryData fallback_snippet_from_entries(const std::vector<SessionNode>& 
   std::reverse(snippets.begin(), snippets.end());
 
   FileOps file_ops{};
-  for (const auto& node : entries) {
-    merge_row_file_ops(file_ops, node);
-    if (node.kind == SessionRowKind::Message) {
-      merge_file_ops(file_ops, extract_file_ops_from_messages({node.message}));
+  for (const auto& entry : entries) {
+    merge_entry_file_ops(file_ops, entry);
+    if (std::holds_alternative<SessionMessageEntry>(entry)) {
+      merge_file_ops(file_ops, extract_file_ops_from_messages({std::get<SessionMessageEntry>(entry).message}));
     }
   }
 
@@ -278,60 +279,60 @@ BranchSummaryData summarize_branch_session_file(const std::filesystem::path& ses
   };
 }
 
-std::vector<SessionNode> collect_entries_for_branch_summary(
-    const SessionGraph& graph,
+std::vector<SessionEntry> collect_entries_for_branch_summary(
+    const SessionManager& mgr,
     const std::string& old_leaf_id,
     const std::string& target_id
 ) {
-  std::vector<SessionNode> out;
+  std::vector<SessionEntry> out;
   if (old_leaf_id.empty()) {
     return out;
   }
 
   if (target_id.empty()) {
-    std::string cur = old_leaf_id;
-    while (!cur.empty()) {
-      auto it = graph.nodes.find(cur);
-      if (it == graph.nodes.end()) {
-        break;
-      }
-      const SessionNode& node = it->second;
-      if (node.kind == SessionRowKind::SessionHeader) {
-        break;
-      }
-      out.push_back(node);
-      cur = node.parent_id;
-    }
-    std::reverse(out.begin(), out.end());
-    return out;
+    // Walk up from old_leaf to root, return all entries in chronological order.
+    // getBranch() already returns SessionEntry objects (not SessionHeader) in chronological order.
+    return mgr.getBranch(old_leaf_id);
   }
 
-  const std::string common = graph.find_common_ancestor(old_leaf_id, target_id);
-  std::string cur = old_leaf_id;
-  while (!cur.empty() && cur != common) {
-    auto it = graph.nodes.find(cur);
-    if (it == graph.nodes.end()) {
+  // Find common ancestor by checking which ids are shared between the two paths.
+  std::vector<SessionEntry> old_path = mgr.getBranch(old_leaf_id);
+  std::vector<SessionEntry> target_path = mgr.getBranch(target_id);
+
+  // Build set of target path ids
+  std::unordered_set<std::string> target_ids;
+  for (const auto& entry : target_path) {
+    target_ids.insert(std::visit(
+        [](const auto& e) -> const std::string& { return e.id; },
+        entry));
+  }
+
+  // Walk from old_leaf up, stopping at common ancestor (exclusive).
+  // old_path is in chronological order (oldest first), so iterate in reverse.
+  for (auto it = old_path.rbegin(); it != old_path.rend(); ++it) {
+    const std::string& id = std::visit(
+        [](const auto& e) -> const std::string& { return e.id; },
+        *it);
+    if (target_ids.count(id)) {
       break;
     }
-    const SessionNode& node = it->second;
-    out.push_back(node);
-    cur = node.parent_id;
+    out.push_back(*it);
   }
   std::reverse(out.begin(), out.end());
   return out;
 }
 
-PreparedBranchEntries prepare_branch_entries(const std::vector<SessionNode>& entries, int token_budget) {
+PreparedBranchEntries prepare_branch_entries(const std::vector<SessionEntry>& entries, int token_budget) {
   PreparedBranchEntries result;
   for (const auto& entry : entries) {
-    merge_row_file_ops(result.file_ops, entry);
+    merge_entry_file_ops(result.file_ops, entry);
   }
 
   std::vector<ChatMessage> picked;
   int total_tokens = 0;
 
   for (int i = static_cast<int>(entries.size()) - 1; i >= 0; --i) {
-    const SessionNode& entry = entries[static_cast<size_t>(i)];
+    const SessionEntry& entry = entries[static_cast<size_t>(i)];
     ChatMessage msg = entry_to_chat_message(entry);
     if (msg.role.empty()) {
       continue;
@@ -341,7 +342,7 @@ PreparedBranchEntries prepare_branch_entries(const std::vector<SessionNode>& ent
     const int tokens = estimate_chat_tokens(msg);
 
     if (token_budget > 0 && total_tokens + tokens > token_budget) {
-      if ((entry.kind == SessionRowKind::Compaction || entry.kind == SessionRowKind::BranchSummary) &&
+      if ((std::holds_alternative<CompactionEntry>(entry) || std::holds_alternative<BranchSummaryEntry>(entry)) &&
           total_tokens < static_cast<int>(static_cast<double>(token_budget) * 0.9)) {
         picked.insert(picked.begin(), std::move(msg));
         total_tokens += tokens;
@@ -359,7 +360,7 @@ PreparedBranchEntries prepare_branch_entries(const std::vector<SessionNode>& ent
 }
 
 BranchSummaryResult generate_branch_summary(
-    const std::vector<SessionNode>& entries,
+    const std::vector<SessionEntry>& entries,
     Provider& provider,
     const std::string& model,
     int context_size,

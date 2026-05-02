@@ -1,11 +1,12 @@
 #include "branch_summary.hpp"
-#include "session.hpp"
+#include "session_entry.hpp"
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <unistd.h>
 
 namespace {
@@ -34,37 +35,85 @@ int main() {
     out << R"({"type":"message","id":"m4","parent_id":"m2","role":"user","content":"fork-b"})" << "\n";
   }
 
-  coding_agent::SessionGraph g;
-  std::string err;
-  if (!coding_agent::load_session_graph(session_file.string(), g, err)) {
-    std::cerr << "load_session_graph: " << err << "\n";
+  auto mgr = coding_agent::SessionManager::open(session_file.string(), "", "");
+  if (!mgr) {
+    std::cerr << "Failed to open session\n";
     return 1;
   }
-  if (g.leaf_id != "m4") {
+
+  if (mgr->getLeafId().value_or("") != "m4") {
     return fail("leaf_id should be last row id");
   }
 
-  const auto branch_m4 = g.get_branch("m4");
-  if (branch_m4.size() != 4U || branch_m4[0] != "root" || branch_m4.back() != "m4") {
-    return fail("get_branch m4 path");
+  const auto branch_m4 = mgr->getBranch("m4");
+  // Session header id "root" is not stored as a SessionEntry in byId; path is message ids only.
+  if (branch_m4.size() != 3U) {
+    return fail("get_branch m4 path size");
+  }
+  {
+    const std::string first_id = std::visit(
+        [](const auto& e) -> std::string { return e.id; }, branch_m4[0]);
+    if (first_id != "m1") {
+      return fail("get_branch m4 first entry should be m1");
+    }
+  }
+  {
+    const std::string last_id = std::visit(
+        [](const auto& e) -> std::string { return e.id; }, branch_m4.back());
+    if (last_id != "m4") {
+      return fail("get_branch m4 last entry should be m4");
+    }
   }
 
-  const auto anc = g.find_common_ancestor("m3", "m4");
+  // Common ancestor: walk up from m3 and m4, find first shared id.
+  const auto path_m3 = mgr->getBranch("m3");
+  const auto path_m4 = mgr->getBranch("m4");
+  std::unordered_set<std::string> m3_ids;
+  for (const auto& e : path_m3) {
+    m3_ids.insert(std::visit([](const auto& ent) -> const std::string& { return ent.id; }, e));
+  }
+  std::string anc = "";
+  for (auto it = path_m4.rbegin(); it != path_m4.rend(); ++it) {
+    const std::string id =
+        std::visit([](const auto& e) -> std::string { return e.id; }, *it);
+    if (m3_ids.count(id)) {
+      anc = id;
+      break;
+    }
+  }
   if (anc != "m2") {
     return fail("common ancestor of fork branches should be m2");
   }
 
-  const auto from_leaf = coding_agent::collect_entries_for_branch_summary(g, "m3", "");
+  const auto from_leaf = coding_agent::collect_entries_for_branch_summary(*mgr, "m3", "");
   if (from_leaf.size() != 3U) {
     return fail("collect to root should include m1,m2,m3");
   }
-  if (from_leaf[0].id != "m1" || from_leaf[2].id != "m3") {
-    return fail("collect chronological order");
+  {
+    const std::string first_id =
+        std::visit([](const auto& e) -> std::string { return e.id; }, from_leaf[0]);
+    if (first_id != "m1") {
+      return fail("collect chronological order first");
+    }
+  }
+  {
+    const std::string last_id =
+        std::visit([](const auto& e) -> std::string { return e.id; }, from_leaf[2]);
+    if (last_id != "m3") {
+      return fail("collect chronological order last");
+    }
   }
 
-  const auto between = coding_agent::collect_entries_for_branch_summary(g, "m3", "m4");
-  if (between.size() != 1U || between[0].id != "m3") {
+  const auto between = coding_agent::collect_entries_for_branch_summary(*mgr, "m3", "m4");
+  if (between.size() != 1U) {
     return fail("collect between m3 and m4 should be just m3");
+  }
+  {
+    const std::string id =
+        std::visit([](const auto& e) -> std::string { return e.id; }, between[0]);
+    if (id != "m3") {
+      return fail("collect between m3 and m4 should be m3");
+    }
   }
 
   const auto prepared =

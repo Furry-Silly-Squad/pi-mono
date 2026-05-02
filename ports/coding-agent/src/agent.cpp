@@ -93,21 +93,19 @@ int run_agent(int argc, char** argv) {
     if (config->branch_summary) {
         if (config->new_session) {
             if (const auto prev = latest_session_path_in_dir(workspace_sessions); prev.has_value()) {
-                SessionGraph graph;
-                std::string graph_error;
-                if (load_session_graph(prev->string(), graph, graph_error) && !graph.leaf_id.empty()) {
+                auto prev_mgr = SessionManager::open(prev->string(), "", config->cwd);
+                if (prev_mgr && prev_mgr->getLeafId().has_value()) {
                     handoff_old_file = prev;
-                    handoff_old_leaf = graph.leaf_id;
+                    handoff_old_leaf = prev_mgr->getLeafId().value();
                 }
             }
         } else if (config->session_id.has_value()) {
             if (const auto latest = latest_session_path_in_dir(workspace_sessions); latest.has_value()) {
                 if (latest->stem().string() != config->session_id.value()) {
-                    SessionGraph graph;
-                    std::string graph_error;
-                    if (load_session_graph(latest->string(), graph, graph_error) && !graph.leaf_id.empty()) {
+                    auto latest_mgr = SessionManager::open(latest->string(), "", config->cwd);
+                    if (latest_mgr && latest_mgr->getLeafId().has_value()) {
                         handoff_old_file = latest;
-                        handoff_old_leaf = graph.leaf_id;
+                        handoff_old_leaf = latest_mgr->getLeafId().value();
                     }
                 }
             }
@@ -129,11 +127,10 @@ int run_agent(int argc, char** argv) {
     }
 
     if (config->branch_summary && handoff_old_file.has_value() && handoff_old_leaf.has_value()) {
-        SessionGraph old_graph;
-        std::string graph_error;
-        if (load_session_graph(handoff_old_file->string(), old_graph, graph_error)) {
-            const std::vector<SessionNode> collected =
-                collect_entries_for_branch_summary(old_graph, handoff_old_leaf.value(), "");
+        auto old_mgr = SessionManager::open(handoff_old_file->string(), "", config->cwd);
+        if (old_mgr) {
+            const std::vector<SessionEntry> collected =
+                collect_entries_for_branch_summary(*old_mgr, handoff_old_leaf.value(), "");
             std::string gen_error;
             const BranchSummaryResult branch_result = generate_branch_summary(
                 collected,

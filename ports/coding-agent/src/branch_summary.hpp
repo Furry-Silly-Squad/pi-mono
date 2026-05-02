@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "providers/provider.hpp"
-#include "session.hpp"
+#include "session_entry.hpp"
 
 namespace coding_agent {
 
@@ -20,8 +20,8 @@ BranchSummaryData summarize_branch_session_file(const std::filesystem::path& ses
 
 /// Entries from `old_leaf_id` back to `target_id` (exclusive of common ancestor); chronological order.
 /// If `target_id` is empty, walks up to the session root (excluding the session header row).
-std::vector<SessionNode> collect_entries_for_branch_summary(
-    const SessionGraph& graph,
+std::vector<SessionEntry> collect_entries_for_branch_summary(
+    const SessionManager& mgr,
     const std::string& old_leaf_id,
     const std::string& target_id
 );
@@ -32,7 +32,7 @@ struct PreparedBranchEntries {
   int total_tokens = 0;
 };
 
-PreparedBranchEntries prepare_branch_entries(const std::vector<SessionNode>& entries, int token_budget);
+PreparedBranchEntries prepare_branch_entries(const std::vector<SessionEntry>& entries, int token_budget);
 
 struct BranchSummaryResult {
   std::string summary;
@@ -41,7 +41,7 @@ struct BranchSummaryResult {
 };
 
 BranchSummaryResult generate_branch_summary(
-    const std::vector<SessionNode>& entries,
+    const std::vector<SessionEntry>& entries,
     Provider& provider,
     const std::string& model,
     int context_size,

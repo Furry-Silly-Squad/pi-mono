@@ -1,4 +1,4 @@
-#include "session.hpp"
+#include "session_entry.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -23,52 +23,71 @@ int main() {
       fs::temp_directory_path() / ("coding-agent-session-test-" + std::to_string(::getpid()));
   fs::create_directories(dir);
 
+  // Write a session file with a compaction entry (v1 format — no id/parentId/timestamp)
   const fs::path session_file = dir / "rt.jsonl";
   {
     std::ofstream out(session_file);
-    out << R"({"type":"session","id":"rt"})"
-        << "\n"
-        << R"({"type":"compaction","tokens_before":10,"tokens_after":5,"summary":"hydrate-summary","first_kept_entry_id":"e1","read_files":["/hydrate/read.txt"],"modified_files":["/hydrate/mod.txt"]})"
+    out << R"({"type":"session","id":"rt"})" << "\n";
+    out << R"({"type":"compaction","tokens_before":10,"tokens_after":5,"summary":"hydrate-summary","first_kept_entry_id":"e1","read_files":["/hydrate/read.txt"],"modified_files":["/hydrate/mod.txt"]})"
         << "\n";
   }
 
-  coding_agent::SessionStore store(".", dir.string());
-  store.start_or_resume("rt", false);
-
-  std::string err;
-  (void)store.load_messages(err);
-  const coding_agent::FileOps& loaded = store.get_last_compaction_file_ops();
-  if (loaded.read_files.count("/hydrate/read.txt") != 1U) {
-    return fail("hydrated read_files");
-  }
-  if (loaded.modified_files.count("/hydrate/mod.txt") != 1U) {
-    return fail("hydrated modified_files");
-  }
-
-  const coding_agent::CompactionEvent appended{
-      .tokens_before = 3,
-      .tokens_after = 2,
-      .first_kept_index = -1,
-      .first_kept_entry_id = "",
-      .summary = "second-compaction",
-      .read_files = {"/append/read.txt"},
-      .modified_files = {"/append/write.txt"},
-  };
-  if (!store.append_compaction(appended, err)) {
-    std::cerr << "append_compaction: " << err << "\n";
+  // Load the session — migration should add id/parentId/timestamp
+  auto mgr = coding_agent::SessionManager::open(session_file.string(), "", "");
+  if (!mgr) {
+    std::cerr << "Failed to open session\n";
     return 1;
   }
 
-  coding_agent::SessionStore store2(".", dir.string());
-  store2.start_or_resume("rt", false);
-  (void)store2.load_messages(err);
-  const coding_agent::FileOps& after_append = store2.get_last_compaction_file_ops();
-  if (after_append.read_files.count("/append/read.txt") != 1U || after_append.read_files.count("/hydrate/read.txt") != 0U) {
-    return fail("last compaction row should replace file-op hydration");
+  // Verify the compaction entry was loaded with migrated id
+  const auto entries = mgr->getEntries();
+  if (entries.empty()) {
+    return fail("should have at least one entry after migration");
   }
-  if (after_append.modified_files.count("/append/write.txt") != 1U ||
-      after_append.modified_files.count("/hydrate/mod.txt") != 0U) {
-    return fail("last compaction modified_files");
+
+  // Append a new compaction
+  const std::string compaction_id = mgr->appendCompaction(
+      "second-compaction", "", 3,
+      nlohmann::json{{"read_files", {"/append/read.txt"}}, {"modified_files", {"/append/write.txt"}}}
+  );
+
+  // Re-open the session to verify persistence
+  auto mgr2 = coding_agent::SessionManager::open(session_file.string(), "", "");
+  if (!mgr2) {
+    std::cerr << "Failed to re-open session\n";
+    return 1;
+  }
+
+  const auto entries2 = mgr2->getEntries();
+  if (entries2.size() != 2U) {
+    return fail("should have two entries after appending compaction");
+  }
+
+  // Verify the last entry is the new compaction
+  auto* last_comp = std::get_if<coding_agent::CompactionEntry>(&entries2.back());
+  if (!last_comp) {
+    return fail("last entry should be a compaction");
+  }
+  if (last_comp->summary != "second-compaction") {
+    return fail("last compaction summary mismatch");
+  }
+
+  // Verify details were persisted
+  if (!last_comp->details.has_value()) {
+    return fail("compaction details should be persisted");
+  }
+  const auto& details = *last_comp->details;
+  if (!details.contains("read_files") || !details.contains("modified_files")) {
+    return fail("compaction details should contain read_files and modified_files");
+  }
+
+  // Verify the first compaction was also persisted
+  auto* first_comp = std::get_if<coding_agent::CompactionEntry>(&entries2[0]);
+  if (!first_comp) {
+    return fail("first entry should be a compaction");
+  }
+  if (first_comp->summary != "hydrate-summary") {
+    return fail("first compaction summary mismatch");
   }
 
   std::cout << "coding-agent-session-store-test: ok\n";

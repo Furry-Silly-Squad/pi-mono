@@ -1147,9 +1147,10 @@ std::vector<SessionEntry> SessionManager::getChildren(const std::string& parentI
   return children;
 }
 
-std::vector<SessionEntry> SessionManager::getBranch(const std::string* fromId) const {
+std::vector<SessionEntry> SessionManager::getBranch(std::optional<std::string> from_entry_id) const {
   std::vector<SessionEntry> path;
-  const std::string startId = fromId ? *fromId : (leafId_.value_or(""));
+  const std::string startId =
+      from_entry_id.has_value() ? from_entry_id.value() : (leafId_.value_or(""));
   if (startId.empty()) return path;
 
   auto current = byId_.find(startId);
@@ -1288,7 +1289,7 @@ std::string SessionManager::branchWithSummary(const std::optional<std::string>& 
 }
 
 std::optional<std::string> SessionManager::createBranchedSession(const std::string& leafId) {
-  const std::vector<SessionEntry> path = getBranch(&leafId);
+  const std::vector<SessionEntry> path = getBranch(leafId);
   if (path.empty()) {
     throw std::runtime_error("Entry " + leafId + " not found");
   }

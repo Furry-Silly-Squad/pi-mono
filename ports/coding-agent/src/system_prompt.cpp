@@ -26,6 +26,9 @@ std::string build_system_prompt(
   out << "Current timestamp: " << iso_timestamp() << "\n";
   out << "Prefer concise, precise technical output.\n";
   out << "Use tools when needed and explain important actions.\n";
+  out << "When you are done calling tools for this step, always write a short user-visible "
+         "message: what you did, what you found, and next steps. Never finish a turn with an "
+         "empty assistant message unless you are immediately issuing tool calls.\n";
 
   if (!tools.empty()) {
     out << "\nAvailable tools:\n";

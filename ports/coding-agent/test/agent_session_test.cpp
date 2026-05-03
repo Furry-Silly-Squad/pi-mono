@@ -546,6 +546,53 @@ bool test_thinking_and_model() {
 }
 
 // ===========================================================================
+// Test: empty assistant completion triggers automatic user nudge + retry
+// ===========================================================================
+
+bool test_empty_completion_nudge() {
+  const fs::path session_dir = make_temp_dir("emptynudge");
+
+  ScriptedProvider provider;
+  coding_agent::ChatResponse empty_final;
+  empty_final.content = "";
+  empty_final.completion_tokens = 1;
+  provider.enqueue(empty_final);
+
+  coding_agent::ChatResponse recovered;
+  recovered.content = "Summary after empty stop.";
+  recovered.completion_tokens = 8;
+  provider.enqueue(recovered);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<EchoTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.max_empty_completion_nudges = 2;
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  const bool ok = agent.run("hi", [](const std::string&) {});
+  EXPECT(ok, "run must succeed");
+  EXPECT(provider.call_count() == 2, "empty completion triggers one retry");
+  EXPECT(agent.last_turn_debug().empty_completion_nudges == 1, "one synthetic nudge recorded");
+
+  const auto& msgs = agent.messages();
+  const coding_agent::ChatMessage* last_asst = nullptr;
+  for (auto it = msgs.rbegin(); it != msgs.rend(); ++it) {
+    if (it->role == "assistant") {
+      last_asst = &(*it);
+      break;
+    }
+  }
+  EXPECT(last_asst != nullptr && last_asst->content == "Summary after empty stop.",
+         "second assistant reply replaces empty completion");
+
+  return true;
+}
+
+// ===========================================================================
 // Driver
 // ===========================================================================
 
@@ -564,6 +611,7 @@ int main() {
       {"manual_compact", test_manual_compact},
       {"interrupt_rolls_back_user", test_interrupt_rolls_back_user},
       {"thinking_and_model", test_thinking_and_model},
+      {"empty_completion_nudge", test_empty_completion_nudge},
   };
 
   int passed = 0;

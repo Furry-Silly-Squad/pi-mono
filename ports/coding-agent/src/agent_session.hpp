@@ -105,6 +105,8 @@ struct TurnDebugInfo {
     std::string run_failure_kind;
     /// Provider / transport error text when `run_failure_kind == "error"`.
     std::string provider_error;
+    /// Synthetic user nudges appended after empty final completions (no tools, no text).
+    int empty_completion_nudges = 0;
 };
 
 // ============================================================================
@@ -136,6 +138,7 @@ struct AgentSessionConfig {
     bool auto_compaction = true;
     std::string initial_active_tools = "read,bash,edit,write";
     bool interactive_debug = true;
+    int max_empty_completion_nudges = 2;
 
     // Callbacks
     AgentEventHandler on_event;
@@ -307,7 +310,8 @@ class AgentSession {
     void finalize_turn_debug(int model_rounds,
                              bool hit_max_tool_iterations,
                              const std::string& failure_kind,
-                             const std::string& provider_err);
+                             const std::string& provider_err,
+                             int empty_completion_nudges);
 
     bool call_provider(const std::vector<ChatMessage>& history,
                        const std::vector<ToolDefinition>& tools,

@@ -71,6 +71,9 @@ void print_interactive_turn_debug(const AgentSession& agent) {
     } else if (d.model_rounds > 0) {
         std::cout << "assistant_tail_last_~20_tokens: (empty assistant content)\n";
     }
+    if (d.empty_completion_nudges > 0) {
+        std::cout << "empty_completion_nudges: " << d.empty_completion_nudges << "\n";
+    }
     if (!d.run_failure_kind.empty()) {
         std::cout << "run_failure_kind: " << d.run_failure_kind << "\n";
         if (!d.provider_error.empty()) {

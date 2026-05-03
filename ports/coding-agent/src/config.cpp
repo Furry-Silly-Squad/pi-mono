@@ -111,6 +111,7 @@ void print_usage() {
       << "  --active-tools <csv>      Comma-separated tool names for the model (default: read,bash,edit,write)\n"
       << "  --interactive-debug       Print turn diagnostics after each reply (default: on)\n"
       << "  --no-interactive-debug    Disable turn diagnostics in interactive mode\n"
+      << "  --max-empty-nudges <n>   When the model returns no text and no tools, nudge and retry (default: 2, 0=off)\n"
       << "  --prompt <text>           Prompt text to send\n"
       << "  --help                    Show this help\n"
       << "\n"
@@ -121,6 +122,7 @@ void print_usage() {
       << "  CODING_AGENT_API_KEY\n"
       << "  CODING_AGENT_MAX_TOOL_ITERATIONS\n"
       << "  CODING_AGENT_INTERACTIVE_DEBUG   1/0 — turn diagnostics in interactive mode\n"
+      << "  CODING_AGENT_MAX_EMPTY_NUDGES    empty-completion retries per user turn (default 2)\n"
       << "Settings file:\n"
       << "  ~/.config/coding-agent/settings.json\n";
 }
@@ -151,6 +153,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .branch_summary = true,
       .initial_active_tools = "read,bash,edit,write",
       .interactive_debug = true,
+      .max_empty_completion_nudges = 2,
   };
 
   if (const auto settings = load_settings_json(); settings.has_value()) {
@@ -165,6 +168,20 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     load_optional(settings.value(), "compaction_fail_fast", config.compaction_fail_fast);
     load_optional(settings.value(), "initial_active_tools", config.initial_active_tools);
     load_optional(settings.value(), "interactive_debug", config.interactive_debug);
+    load_optional(settings.value(), "max_empty_completion_nudges", config.max_empty_completion_nudges);
+  }
+
+  if (const char* nudge_env = std::getenv("CODING_AGENT_MAX_EMPTY_NUDGES"); nudge_env != nullptr) {
+    try {
+      config.max_empty_completion_nudges = std::stoi(nudge_env);
+      if (config.max_empty_completion_nudges < 0) {
+        error = "CODING_AGENT_MAX_EMPTY_NUDGES must be >= 0";
+        return std::nullopt;
+      }
+    } catch (...) {
+      error = "Invalid value for CODING_AGENT_MAX_EMPTY_NUDGES";
+      return std::nullopt;
+    }
   }
 
   if (const char* idebug = std::getenv("CODING_AGENT_INTERACTIVE_DEBUG"); idebug != nullptr) {
@@ -318,6 +335,13 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       config.interactive_debug = false;
       continue;
     }
+    if (arg == "--max-empty-nudges" && i + 1 < argc) {
+      if (!parse_int_arg(argv[++i], config.max_empty_completion_nudges)) {
+        error = "Invalid value for --max-empty-nudges";
+        return std::nullopt;
+      }
+      continue;
+    }
     if (arg == "--prompt" && i + 1 < argc) {
       config.prompt = std::string(argv[++i]);
       continue;
@@ -335,6 +359,10 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
   }
   if (config.compaction_keep_recent_tokens <= 0) {
     error = "--compaction-keep-recent-tokens must be > 0";
+    return std::nullopt;
+  }
+  if (config.max_empty_completion_nudges < 0) {
+    error = "--max-empty-nudges must be >= 0";
     return std::nullopt;
   }
 

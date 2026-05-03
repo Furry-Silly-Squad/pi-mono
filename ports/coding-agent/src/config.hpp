@@ -34,6 +34,8 @@ struct Config {
   std::string initial_active_tools;
   /// After each interactive prompt, print turn diagnostics (tail of assistant text, rounds, etc.).
   bool interactive_debug = true;
+  /// When the model ends with no tools and empty text, append a nudge user message and retry (0 = off).
+  int max_empty_completion_nudges = 2;
 };
 
 std::optional<Config> parse_config(int argc, char** argv, std::string& error);

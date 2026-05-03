@@ -49,6 +49,7 @@ AgentSessionConfig make_session_config(const Config& c) {
     cfg.auto_compaction            = true;
     cfg.initial_active_tools       = c.initial_active_tools;
     cfg.interactive_debug          = c.interactive_debug;
+    cfg.max_empty_completion_nudges = c.max_empty_completion_nudges;
     return cfg;
 }
 

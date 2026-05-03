@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -70,6 +71,19 @@ std::string describe_tool_call(const std::string& tool_name, const std::string& 
     } catch (...) {}
     return tool_name;
 }
+
+bool is_whitespace_or_empty_content(const std::string& s) {
+    for (unsigned char c : s) {
+        if (!std::isspace(c)) return false;
+    }
+    return true;
+}
+
+// User-visible follow-up when the model stops with no tools and no message body (common with some servers/models).
+const char* kEmptyCompletionUserNudge =
+    "Your last reply had no message text. Briefly summarize what you did, what you found, and "
+    "what the user should do next. If more tool calls are required, use them. Do not reply with an "
+    "empty message.";
 
 /// Match `approx_tokens` (4 chars per token): show tail of the last N token-equivalents.
 constexpr int kDebugTailApproxTokens = 20;
@@ -471,12 +485,14 @@ const TurnDebugInfo& AgentSession::last_turn_debug() const { return last_turn_de
 void AgentSession::finalize_turn_debug(int model_rounds,
                                        bool hit_max_tool_iterations,
                                        const std::string& failure_kind,
-                                       const std::string& provider_err) {
+                                       const std::string& provider_err,
+                                       int empty_completion_nudges) {
     last_turn_debug_                 = TurnDebugInfo{};
     last_turn_debug_.model_rounds    = model_rounds;
     last_turn_debug_.hit_max_tool_iterations = hit_max_tool_iterations;
     last_turn_debug_.run_failure_kind      = failure_kind;
     last_turn_debug_.provider_error        = provider_err;
+    last_turn_debug_.empty_completion_nudges = empty_completion_nudges;
 
     for (auto it = messages_.rbegin(); it != messages_.rend(); ++it) {
         if (it->role == "assistant") {
@@ -513,6 +529,7 @@ bool AgentSession::run_turn(const std::string& user_input,
 
     int model_rounds               = 0;
     bool hit_max_tool_iterations   = false;
+    int empty_completion_nudges    = 0;
 
     for (int iter = 0; iter < config_.max_tool_iterations; ++iter) {
         // Signal before each model call (drives between-tool animation resume).
@@ -527,14 +544,14 @@ bool AgentSession::run_turn(const std::string& user_input,
                 if (!messages_.empty() && messages_.back().role == "user") {
                     messages_.pop_back();
                 }
-                finalize_turn_debug(model_rounds, false, "interrupted", "");
+                finalize_turn_debug(model_rounds, false, "interrupted", "", empty_completion_nudges);
                 return false;
             }
             AgentEvent err_ev{};
             err_ev.type          = AgentEvent::Type::Error;
             err_ev.error_message = error;
             emit_event(err_ev.type, err_ev);
-            finalize_turn_debug(model_rounds, false, "error", error);
+            finalize_turn_debug(model_rounds, false, "error", error, empty_completion_nudges);
             return false;
         }
 
@@ -568,7 +585,22 @@ bool AgentSession::run_turn(const std::string& user_input,
 
         check_and_compact(on_chunk);
 
-        if (response.tool_calls.empty()) break;
+        if (response.tool_calls.empty()) {
+            if (!is_whitespace_or_empty_content(response.content)) break;
+            if (config_.max_empty_completion_nudges > 0 &&
+                empty_completion_nudges < config_.max_empty_completion_nudges) {
+                ++empty_completion_nudges;
+                ChatMessage nudge{
+                    .role    = "user",
+                    .content = kEmptyCompletionUserNudge,
+                };
+                nudge.entry_id = session_->appendMessage(nudge);
+                messages_.push_back(nudge);
+                on_chunk("\n[empty assistant message; retrying with nudge…]\n");
+                continue;
+            }
+            break;
+        }
 
         execute_tools(response.tool_calls, on_chunk);
         if (iter == config_.max_tool_iterations - 1) {
@@ -582,7 +614,7 @@ bool AgentSession::run_turn(const std::string& user_input,
     te_ev.turn_index = turn_index_ - 1;
     emit_event(te_ev.type, te_ev);
 
-    finalize_turn_debug(model_rounds, hit_max_tool_iterations, "", "");
+    finalize_turn_debug(model_rounds, hit_max_tool_iterations, "", "", empty_completion_nudges);
     return true;
 }
 

@@ -92,15 +92,15 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 ---
 
-### 12. No file locking on session JSONL files
+### 12. No file locking on session JSONL files (RESOLVED)
 
-**Severity: Low** — concurrent access to the same session file (e.g. two terminal sessions in the same project) can corrupt the file.
+**Severity: Was Low** — concurrent access to the same session file may corrupt it.
 
 **Location:** `session_entry.cpp` — `_persist()`, `_rewriteFile()`, `forkFrom()`
 
-**What happens:** Multiple `coding-agent` processes appending to the same `.jsonl` file can interleave writes. `SessionManager::forkFrom()` reads source files without any locking.
+**What happened:** Multiple `coding-agent` processes appending to the same `.jsonl` file can interleave writes. `SessionManager::forkFrom()` reads source files without any locking.
 
-**Fix:** Use `flock()` or `fcntl()` for advisory locking on write. Or accept the limitation and document it (the TS port has the same limitation).
+**Status: Resolved by documentation.** Added a block comment at the top of the SessionManager implementation section in `session_entry.cpp` documenting the lack of file locking and the single-threaded assumption. This matches the TypeScript port's behavior. Adding platform-specific file locking (flock/fcntl on Unix, LockFileEx on Windows) would add significant complexity for a scenario not supported by the current architecture.
 
 ---
 

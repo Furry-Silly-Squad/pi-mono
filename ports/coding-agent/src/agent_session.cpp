@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <thread>
 
 #include "compaction.hpp"
 #include "context_loader.hpp"
@@ -792,6 +794,275 @@ bool AgentSession::check_and_compact(const ChunkCallback& on_chunk) {
     return true;
 }
 
+void AgentSession::resolve_retry() {
+    {
+        std::lock_guard<std::mutex> lock(retry_mutex_);
+        retry_in_progress_ = false;
+    }
+    retry_cv_.notify_all();
+}
+
+// ============================================================================
+// Queue API
+// ============================================================================
+
+void AgentSession::steer(const std::string& text,
+                         const std::vector<std::string>& images) {
+    steering_queue_.enqueue(text, images);
+    emit_queue_update();
+}
+
+void AgentSession::followUp(const std::string& text,
+                            const std::vector<std::string>& images) {
+    follow_up_queue_.enqueue(text, images);
+    emit_queue_update();
+}
+
+void AgentSession::clear_steering_queue() {
+    steering_queue_.clear();
+    emit_queue_update();
+}
+
+void AgentSession::clear_follow_up_queue() {
+    follow_up_queue_.clear();
+    emit_queue_update();
+}
+
+void AgentSession::clear_all_queues() {
+    steering_queue_.clear();
+    follow_up_queue_.clear();
+    pending_next_turn_messages_.clear();
+    emit_queue_update();
+}
+
+bool AgentSession::has_queued_messages() const {
+    return steering_queue_.has_items() || follow_up_queue_.has_items();
+}
+
+QueueMode AgentSession::steering_mode() const {
+    return steering_queue_.mode();
+}
+
+void AgentSession::set_steering_mode(QueueMode mode) {
+    steering_queue_.set_mode(mode);
+}
+
+QueueMode AgentSession::follow_up_mode() const {
+    return follow_up_queue_.mode();
+}
+
+void AgentSession::set_follow_up_mode(QueueMode mode) {
+    follow_up_queue_.set_mode(mode);
+}
+
+void AgentSession::waitForRetry() {
+    if (!retry_in_progress_) return;
+    std::unique_lock<std::mutex> lock(retry_mutex_);
+    retry_cv_.wait(lock, [this] { return !retry_in_progress_; });
+}
+
+void AgentSession::sendCustomMessage(const std::string& custom_type,
+                                     const std::string& content,
+                                     const std::string& /*display*/,
+                                     const std::vector<std::string>& details,
+                                     CustomMessageDelivery delivery) {
+    std::string message;
+    if (!details.empty()) {
+        message = content + " [" + custom_type + "]";
+    } else {
+        message = content;
+    }
+
+    switch (delivery) {
+        case CustomMessageDelivery::Steer:
+            steer(message);
+            break;
+        case CustomMessageDelivery::FollowUp:
+            followUp(message);
+            break;
+        case CustomMessageDelivery::NextTurn:
+            pending_next_turn_messages_.push_back(message);
+            break;
+    }
+    emit_queue_update();
+}
+
+void AgentSession::emit_queue_update() {
+    AgentEvent ev{};
+    ev.type = AgentEvent::Type::QueueUpdate;
+
+    // Build display from queue state without draining
+    steering_messages_.clear();
+    for (const auto& [text, _] : steering_queue_.items()) {
+        steering_messages_.push_back(text);
+    }
+    follow_up_messages_.clear();
+    for (const auto& [text, _] : follow_up_queue_.items()) {
+        follow_up_messages_.push_back(text);
+    }
+
+    ev.steering_messages = steering_messages_;
+    ev.follow_up_messages = follow_up_messages_;
+    emit_event(ev.type, ev);
+}
+
+// ============================================================================
+// Retry Helpers
+// ============================================================================
+
+bool AgentSession::is_retryable_error(const std::string& error_text) const {
+    if (error_text.empty()) return false;
+
+    std::string lower(error_text);
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    // Rate limit indicators
+    if (lower.find("rate limit") != std::string::npos ||
+        lower.find("ratelimit") != std::string::npos ||
+        lower.find("429") != std::string::npos) {
+        return true;
+    }
+
+    // Overloaded indicators
+    if (lower.find("overloaded") != std::string::npos ||
+        lower.find("503") != std::string::npos ||
+        lower.find("service unavailable") != std::string::npos) {
+        return true;
+    }
+
+    // Server error indicators
+    if (lower.find("500") != std::string::npos ||
+        lower.find("internal error") != std::string::npos) {
+        return true;
+    }
+
+    // Timeout
+    if (lower.find("timeout") != std::string::npos) {
+        return true;
+    }
+
+    // Connection errors
+    if (lower.find("connection reset") != std::string::npos ||
+        lower.find("connection refused") != std::string::npos) {
+        return true;
+    }
+
+    return false;
+}
+
+bool AgentSession::handle_retryable_error(const ChunkCallback& on_chunk,
+                                          std::atomic<bool>* cancel_flag) {
+    if (!config_.retry_enabled) return false;
+    if (retry_in_progress_) return false;
+
+    // We need the error message - it should be available via last_turn_debug_
+    const std::string& error_text = last_turn_debug_.provider_error;
+    if (!is_retryable_error(error_text)) return false;
+
+    retry_in_progress_ = true;
+    retry_attempt_++;
+
+    if (retry_attempt_ > config_.retry_max_retries) {
+        retry_in_progress_ = false;
+        retry_cv_.notify_all();
+        on_chunk("[retry] Failed after " + std::to_string(config_.retry_max_retries) +
+                 " attempts: " + error_text + "\n");
+        return false;
+    }
+
+    // Calculate backoff delay
+    int delay_ms = config_.retry_base_delay_ms;
+    for (int i = 1; i < retry_attempt_; ++i) {
+        delay_ms *= 2;
+    }
+    delay_ms = std::min(delay_ms, config_.retry_max_retry_delay_ms);
+
+    // Emit auto_retry_start event
+    AgentEvent start_ev{};
+    start_ev.type = AgentEvent::Type::AutoRetryStart;
+    start_ev.retry_attempt = retry_attempt_;
+    start_ev.retry_max_attempts = config_.retry_max_retries;
+    start_ev.retry_delay_ms = delay_ms;
+    start_ev.retry_error_message = error_text;
+    emit_event(start_ev.type, start_ev);
+
+    on_chunk("[retry #" + std::to_string(retry_attempt_) + "/" +
+             std::to_string(config_.retry_max_retries) + "] Waiting " +
+             std::to_string(delay_ms) + "ms before retry...\n");
+
+    // Sleep for delay_ms (interruptible by cancel flag)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+
+        if (cancel_flag && cancel_flag->load()) {
+            retry_in_progress_ = false;
+            retry_cv_.notify_all();
+            on_chunk("[retry] Cancelled\n");
+            return false;
+        }
+    }
+
+    // Call provider again with the same messages
+    ChatResponse response;
+    std::string error;
+    const bool success = call_provider(
+        messages_,
+        active_tool_definitions(),
+        response,
+        error,
+        on_chunk,
+        cancel_flag
+    );
+
+    if (success) {
+        // Append assistant message
+        ChatMessage assistant{
+            .role         = "assistant",
+            .content      = response.content,
+            .tool_calls   = response.tool_calls,
+            .usage_tokens = response.completion_tokens,
+        };
+        assistant.entry_id = session_->appendMessage(assistant);
+        messages_.push_back(assistant);
+
+        // Emit auto_retry_end event
+        AgentEvent end_ev{};
+        end_ev.type = AgentEvent::Type::AutoRetryEnd;
+        end_ev.retry_success = true;
+        end_ev.retry_attempt = retry_attempt_;
+        emit_event(end_ev.type, end_ev);
+
+        on_chunk("[retry] Success after " + std::to_string(retry_attempt_) +
+                 " attempts\n");
+
+        retry_attempt_ = 0;
+        resolve_retry();
+        return true;
+    }
+
+    // Retry failed with another error
+    AgentEvent end_ev{};
+    end_ev.type = AgentEvent::Type::AutoRetryEnd;
+    end_ev.retry_success = false;
+    end_ev.retry_attempt = retry_attempt_;
+    end_ev.retry_final_error = error;
+    emit_event(end_ev.type, end_ev);
+
+    if (is_retryable_error(error) && retry_attempt_ < config_.retry_max_retries) {
+        // Another retryable error - loop back to retry
+        resolve_retry();
+        return handle_retryable_error(on_chunk, cancel_flag);
+    }
+
+    on_chunk("[retry] Failed after " + std::to_string(retry_attempt_) +
+             " attempts: " + error + "\n");
+
+    retry_attempt_ = 0;
+    resolve_retry();
+    return false;
+}
+
 // ============================================================================
 // Internal: emit_event
 // ============================================================================
@@ -801,3 +1072,4 @@ void AgentSession::emit_event(AgentEvent::Type /*type*/, const AgentEvent& event
 }
 
 }  // namespace coding_agent
+

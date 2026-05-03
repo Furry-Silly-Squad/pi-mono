@@ -11,6 +11,7 @@
 #include "compaction.hpp"
 #include "config.hpp"
 #include "file_ops.hpp"
+#include "pending_message_queue.hpp"
 #include "providers/provider.hpp"
 #include "session_entry.hpp"
 #include "tools/tool_registry.hpp"
@@ -34,6 +35,19 @@ const char* thinking_level_to_string(ThinkingLevel level);
 ThinkingLevel string_to_thinking_level(const std::string& str);
 
 // ============================================================================
+// Retry Settings
+// ============================================================================
+
+/// Retry settings for transient LLM errors.
+struct RetrySettings {
+    bool enabled = true;
+    int maxRetries = 3;
+    int baseDelayMs = 1000;
+    int maxRetryDelayMs = 60000;
+    int timeoutMs = 30000;
+};
+
+// ============================================================================
 // Agent Events
 // ============================================================================
 
@@ -48,6 +62,9 @@ struct AgentEvent {
         ThinkingLevelChange,
         CompactionStart,
         CompactionEnd,
+        QueueUpdate,
+        AutoRetryStart,
+        AutoRetryEnd,
         Error,
         Abort,
     };
@@ -80,6 +97,20 @@ struct AgentEvent {
     int tokens_after = 0;
     std::string compaction_summary;
     std::string compaction_error;
+
+    // For QueueUpdate
+    std::vector<std::string> steering_messages;
+    std::vector<std::string> follow_up_messages;
+
+    // For AutoRetryStart
+    int retry_attempt = 0;
+    int retry_max_attempts = 0;
+    int retry_delay_ms = 0;
+    std::string retry_error_message;
+
+    // For AutoRetryEnd
+    bool retry_success = false;
+    std::string retry_final_error;
 
     // For Error
     std::string error_message;
@@ -139,6 +170,13 @@ struct AgentSessionConfig {
     std::string initial_active_tools = "read,bash,edit,write";
     bool interactive_debug = true;
     int max_empty_completion_nudges = 2;
+
+    // Retry settings
+    bool retry_enabled = true;
+    int retry_max_retries = 3;
+    int retry_base_delay_ms = 1000;
+    int retry_max_retry_delay_ms = 60000;
+    int retry_timeout_ms = 30000;
 
     // Callbacks
     AgentEventHandler on_event;
@@ -298,6 +336,66 @@ class AgentSession {
     /// Diagnostics from the last `run()` (populated on success and on failure).
     const TurnDebugInfo& last_turn_debug() const;
 
+    // ====================================================================
+    // Queue Management
+    // ====================================================================
+
+    /// Queue a steering message while the agent is running.
+    /// Delivered after the current assistant turn finishes its tool calls,
+    /// before the next LLM call.
+    void steer(const std::string& text,
+               const std::vector<std::string>& images = {});
+
+    /// Queue a follow-up message.
+    /// Delivered only when the agent has no more tool calls and no steering messages.
+    void followUp(const std::string& text,
+                  const std::vector<std::string>& images = {});
+
+    /// Clear steering queue.
+    void clear_steering_queue();
+
+    /// Clear follow-up queue.
+    void clear_follow_up_queue();
+
+    /// Clear all queues.
+    void clear_all_queues();
+
+    /// Check if either queue has pending messages.
+    bool has_queued_messages() const;
+
+    /// Get current steering queue mode.
+    QueueMode steering_mode() const;
+
+    /// Set steering queue mode.
+    void set_steering_mode(QueueMode mode);
+
+    /// Get current follow-up queue mode.
+    QueueMode follow_up_mode() const;
+
+    /// Set follow-up queue mode.
+    void set_follow_up_mode(QueueMode mode);
+
+    /// Wait for any in-progress retry to complete.
+    void waitForRetry();
+
+    // ====================================================================
+    // Custom Messages
+    // ====================================================================
+
+    /// Delivery mode for custom messages.
+    enum class CustomMessageDelivery {
+        Steer,
+        FollowUp,
+        NextTurn,
+    };
+
+    /// Send a custom message with a specific delivery mode.
+    void sendCustomMessage(const std::string& custom_type,
+                           const std::string& content,
+                           const std::string& display,
+                           const std::vector<std::string>& details = {},
+                           CustomMessageDelivery delivery = CustomMessageDelivery::NextTurn);
+
  private:
     // ====================================================================
     // Internal Run Loop
@@ -360,6 +458,40 @@ class AgentSession {
     int compaction_count_ = 0;
     int turn_index_ = 0;
     TurnDebugInfo last_turn_debug_{};
+
+    // ====================================================================
+    // Queue State
+    // ====================================================================
+
+    PendingMessageQueue steering_queue_;
+    PendingMessageQueue follow_up_queue_;
+    std::vector<std::string> pending_next_turn_messages_;
+    std::vector<std::string> steering_messages_;
+    std::vector<std::string> follow_up_messages_;
+
+    // ====================================================================
+    // Retry State
+    // ====================================================================
+
+    int retry_attempt_ = 0;
+    bool retry_in_progress_ = false;
+    std::condition_variable retry_cv_;
+    std::mutex retry_mutex_;
+
+    // ====================================================================
+    // Event Helpers
+    // ====================================================================
+
+    void emit_queue_update();
+
+    // ====================================================================
+    // Retry Helpers
+    // ====================================================================
+
+    bool is_retryable_error(const std::string& error_text) const;
+    bool handle_retryable_error(const ChunkCallback& on_chunk,
+                                std::atomic<bool>* cancel_flag);
+    void resolve_retry();
 };
 
 }  // namespace coding_agent

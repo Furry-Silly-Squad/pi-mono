@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 
 #include <curl/curl.h>
@@ -27,7 +28,9 @@ class LlamaCppProvider final : public Provider {
   std::atomic<bool> interrupted_ = false;
   CURL* active_curl_ = nullptr;
   std::atomic<bool> fallback_cancel_{false};
-  std::atomic<bool>* active_cancel_flag_ = nullptr;
+  // Atomic address of the active cancel flag to avoid data races on the
+  // pointer itself.  cancel() stores via release, chat() loads via acquire.
+  std::atomic<std::uintptr_t> active_cancel_flag_addr_{0};
 };
 
 }  // namespace coding_agent

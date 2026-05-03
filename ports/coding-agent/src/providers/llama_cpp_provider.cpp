@@ -266,8 +266,10 @@ LlamaCppProvider::LlamaCppProvider(std::string base_url, std::string api_key)
 
 void LlamaCppProvider::cancel() {
   interrupted_.store(true, std::memory_order_release);
-  if (active_cancel_flag_ != nullptr) {
-    active_cancel_flag_->store(true, std::memory_order_release);
+  std::uintptr_t addr = active_cancel_flag_addr_.load(std::memory_order_acquire);
+  if (addr != 0) {
+    std::atomic<bool>* flag = reinterpret_cast<std::atomic<bool>*>(addr);
+    flag->store(true, std::memory_order_release);
   }
 }
 
@@ -331,13 +333,16 @@ bool LlamaCppProvider::chat(
   curl_easy_setopt(curl, CURLOPT_XFERINFODATA, effective_cancel);
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
 
-  active_cancel_flag_ = effective_cancel;
+  active_cancel_flag_addr_.store(
+      reinterpret_cast<std::uintptr_t>(effective_cancel),
+      std::memory_order_release
+  );
 
   // Check for pre-existing cancellation before starting
   if (effective_cancel->load(std::memory_order_acquire)) {
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    active_cancel_flag_ = nullptr;
+    active_cancel_flag_addr_.store(0, std::memory_order_release);
     error = "interrupted";
     return false;
   }
@@ -358,7 +363,7 @@ bool LlamaCppProvider::chat(
   const CURLcode result = curl_easy_perform(curl);
 
   active_curl_        = nullptr;
-  active_cancel_flag_ = nullptr;
+  active_cancel_flag_addr_.store(0, std::memory_order_release);
   long http_status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
 

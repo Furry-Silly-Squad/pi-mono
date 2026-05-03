@@ -56,17 +56,15 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 ## Open issues
 
-### 9. `LlamaCppProvider::cancel()` / `chat()` data race on `active_cancel_flag_`
+### 9. `LlamaCppProvider::cancel()` / `chat()` data race on `active_cancel_flag_` (RESOLVED)
 
-**Severity: Low–Medium** — undefined behavior in theory, rare in practice.
+**Severity: Was Low–Medium** — undefined behavior on concurrent cancel/chat.
 
 **Location:** `llama_cpp_provider.hpp` / `llama_cpp_provider.cpp`
 
-**What happens:** `cancel()` writes to `active_cancel_flag_` (a raw pointer) while `chat()` reads it. `active_cancel_flag_` is a plain pointer, not atomic. `interrupted_` and `fallback_cancel_` are `std::atomic<bool>`, but the pointer itself is unprotected.
+**What happened:** `cancel()` wrote to `active_cancel_flag_` (a raw pointer) while `chat()` read it. `active_cancel_flag_` was a plain pointer, not atomic. `interrupted_` and `fallback_cancel_` are `std::atomic<bool>`, but the pointer itself was unprotected.
 
-**Fix directions:**
-- Protect `active_cancel_flag_` and `active_curl_` with a mutex, or use an `std::atomic<std::uintptr_t>` to publish the address of the active cancel flag with correct memory order (and document lifetime).
-- Or: document that `cancel()` may only be used from the same thread that called `chat()` in this port; no cross-thread cancel today.
+**Status: Resolved.** Replaced `std::atomic<bool>* active_cancel_flag_` with `std::atomic<std::uintptr_t> active_cancel_flag_addr_`. The cancel flag address is published via `store(..., release)` and consumed via `load(..., acquire)`. `cancel()` loads the address atomically, casts to `std::atomic<bool>*`, and stores `true`. Zero address means no active request.
 
 ---
 
@@ -118,18 +116,15 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 ---
 
-### 14. `abort_requested_` never checked in the run loop
+### 14. `abort_requested_` never checked in the run loop (RESOLVED)
 
-**Severity: Low–Medium** — user abort may not stop tool execution mid-turn.
+**Severity: Was Low–Medium** — user abort may not stop tool execution mid-turn.
 
 **Location:** `agent_session.cpp` — `AgentSession::abort()`, `AgentSession::run_turn()`
 
-**What happens:** `abort()` sets `abort_requested_ = true` and calls `provider_.cancel()`. The provider cancellation stops the in-flight HTTP request. However, `abort_requested_` is never checked in `run_turn()` between tool iterations or during `execute_tools()`. If the user aborts during a long-running bash command or between tool calls, the tool continues executing and the loop proceeds to the next iteration until the provider is called again (at which point the provider-level cancel takes effect).
+**What happened:** `abort()` sets `abort_requested_ = true` and calls `provider_.cancel()`. The provider cancellation stops the in-flight HTTP request. However, `abort_requested_` was never checked in `run_turn()` between tool iterations or during `execute_tools()`. If the user aborts during a long-running bash command or between tool calls, the tool continued executing and the loop proceeded to the next iteration until the provider was called again.
 
-**Fix directions:**
-- Add `abort_requested_.load()` checks in the run loop between iterations and in `execute_tools()`.
-- Consider propagating the abort state to tools (e.g., a `std::atomic<bool>*` abort flag passed to `ToolRegistry::dispatch()`).
-- Or: document that abort only stops the next LLM call, not in-flight tools.
+**Status: Resolved.** Added `abort_requested_.load()` check at the top of each tool iteration in `run_turn()`, before each model call. On abort detection, `emit_abort_event()` is called (which emits an `AgentEvent::Type::Abort` event and clears the flag), then the turn exits with `failure_kind == "interrupted"`.
 
 ---
 
@@ -149,5 +144,6 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 - **Fixed in recent commits:** Issues 1-8.
 - **Resolved by code structure (no fix needed):** Issues 11 (non-stream fallback recursion), 13 (retry UX parity).
-- **Still open:** cancel pointer lifetime vs threading (9), deferred persist / threading docs (10), session file locking (12), abort loop check (14), fork file locking (15).
-- **Priority:** Issue 9 next if cross-thread cancel matters; Issue 14 if clean abort behavior is needed; Issues 10, 12, 15 are documentation or edge cases.
+- **Resolved by fixes:** Issue 9 (cancel pointer data race), Issue 14 (abort loop check).
+- **Still open:** deferred persist / threading docs (10), session file locking (12), fork file locking (15).
+- **Priority:** Issues 10, 12, 15 are documentation or edge cases with no immediate fix required.

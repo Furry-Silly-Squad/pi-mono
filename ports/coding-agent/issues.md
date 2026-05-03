@@ -68,15 +68,15 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 ---
 
-### 10. `SessionManager::_persist()` deferred write and threading
+### 10. `SessionManager::_persist()` deferred write and threading (RESOLVED)
 
-**Severity: Low** — documentation / future threading.
+**Severity: Was Low** — documentation / future threading.
 
 **Location:** `session_entry.cpp` — `SessionManager::_persist()`
 
-**What happens:** Until the first **assistant** message exists, `_persist` returns without writing; entries stay in `fileEntries_` only. Once an assistant message is appended, all prior rows are flushed to disk in one pass (`!flushed_` branch). That is intentional (avoid partial session files with only user turns). Concurrent `_appendEntry` / `_persist` calls are not synchronized.
+**What happened:** Until the first **assistant** message exists, `_persist` returns without writing; entries stay in `fileEntries_` only. Once an assistant message is appended, all prior rows are flushed to disk in one pass (`!flushed_` branch). That is intentional (avoid partial session files with only user turns). Concurrent `_appendEntry` / `_persist` calls are not synchronized.
 
-**Fix:** Document that `_persist` / `SessionManager` are single-threaded. Add synchronization if multiple threads ever append to the same manager.
+**Status: Resolved by documentation.** Added a block comment at the top of the SessionManager implementation section in `session_entry.cpp` documenting the single-threaded assumption and the lack of file locking. This matches the TypeScript port's behavior.
 
 ---
 

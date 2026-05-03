@@ -749,6 +749,16 @@ SessionContext buildSessionContext(const std::vector<SessionEntry>& entries,
 
 // ============================================================================
 // SessionManager implementation
+//
+// Threading model: SessionManager is NOT thread-safe. All methods must be
+// called from a single thread. The caller (AgentSession) is single-threaded
+// in the current port. Concurrent access from multiple threads is not
+// supported and would cause data races on fileEntries_, byId_, leafId_, etc.
+//
+// File locking: SessionManager does not use file locking (flock/fcntl).
+// Concurrent processes writing to the same .jsonl file may interleave
+// writes and corrupt the file. This matches the TypeScript port's behavior.
+// If concurrent access is needed, callers must serialize access externally.
 // ============================================================================
 
 SessionManager::SessionManager(const std::string& cwd,

@@ -144,3 +144,27 @@ target_include_directories(coding-agent-phase9-test PRIVATE "${CMAKE_CURRENT_SOU
 target_link_libraries(coding-agent-phase9-test PRIVATE nlohmann_json::nlohmann_json)
 
 add_test(NAME coding-agent-phase9 COMMAND coding-agent-phase9-test)
+
+# AgentSession abort / cancel-flag (same link set as agent-session integration test)
+add_executable(coding-agent-agent-session-abort-test
+  test/agent_session_abort_test.cpp
+  src/agent_session.cpp
+  src/compaction.cpp
+  src/context_loader.cpp
+  src/file_ops.cpp
+  src/session_entry.cpp
+  src/system_prompt.cpp
+  src/tools/tool_registry.cpp
+  src/tools/bash_destructive.cpp
+  src/tools/bash_tool.cpp
+  src/tools/edit_tool.cpp
+  src/tools/find_tool.cpp
+  src/tools/grep_tool.cpp
+  src/tools/ls_tool.cpp
+  src/tools/read_tool.cpp
+  src/tools/write_tool.cpp
+)
+target_include_directories(coding-agent-agent-session-abort-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-agent-session-abort-test PRIVATE nlohmann_json::nlohmann_json)
+
+add_test(NAME coding-agent-agent-session-abort COMMAND coding-agent-agent-session-abort-test)

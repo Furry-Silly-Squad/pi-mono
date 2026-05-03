@@ -580,6 +580,11 @@ bool AgentSession::run_turn(const std::string& user_input,
         std::string error;
         if (!call_provider(messages_, active_tool_definitions(), response, error, on_chunk, cancel_flag)) {
             if (error == "interrupted") {
+                // abort() sets abort_requested_ then provider.cancel(); interruption may surface
+                // here rather than at the top-of-loop check, so emit Abort in that case too.
+                if (abort_requested_.load(std::memory_order_acquire)) {
+                    emit_abort_event();
+                }
                 if (!messages_.empty() && messages_.back().role == "user") {
                     messages_.pop_back();
                 }

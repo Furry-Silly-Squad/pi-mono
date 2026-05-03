@@ -266,6 +266,9 @@ LlamaCppProvider::LlamaCppProvider(std::string base_url, std::string api_key)
 
 void LlamaCppProvider::cancel() {
   interrupted_.store(true, std::memory_order_release);
+  if (active_cancel_flag_ != nullptr) {
+    active_cancel_flag_->store(true, std::memory_order_release);
+  }
 }
 
 bool LlamaCppProvider::chat(
@@ -318,27 +321,32 @@ bool LlamaCppProvider::chat(
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
   curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, payload_text.size());
 
-  // Set up cancellation via progress callback
-  if (cancel_flag != nullptr) {
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, cancel_flag);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  std::atomic<bool>* effective_cancel = cancel_flag != nullptr ? cancel_flag : &fallback_cancel_;
+  if (cancel_flag == nullptr) {
+    fallback_cancel_.store(false, std::memory_order_release);
   }
 
+  // Set up cancellation via progress callback (aborts transfer when flag becomes true)
+  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, effective_cancel);
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+
+  active_cancel_flag_ = effective_cancel;
+
   // Check for pre-existing cancellation before starting
-  if (cancel_flag && cancel_flag->load(std::memory_order_acquire)) {
+  if (effective_cancel->load(std::memory_order_acquire)) {
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    active_cancel_flag_ = nullptr;
     error = "interrupted";
     return false;
   }
 
-  // Store curl handle for cancellation
   active_curl_ = curl;
   interrupted_.store(false, std::memory_order_release);
 
   StreamState stream_state{.buffer = "", .response = &response, .on_chunk = on_chunk, .error = ""};
-  stream_state.cancel_flag = cancel_flag;
+  stream_state.cancel_flag = effective_cancel;
   if (request.stream) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_stream_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &stream_state);
@@ -349,8 +357,8 @@ bool LlamaCppProvider::chat(
 
   const CURLcode result = curl_easy_perform(curl);
 
-  // Clear active curl handle
-  active_curl_ = nullptr;
+  active_curl_        = nullptr;
+  active_cancel_flag_ = nullptr;
   long http_status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
 
@@ -417,7 +425,7 @@ bool LlamaCppProvider::chat(
         );
         ChatResponse retry_response;
         std::string retry_error;
-        if (chat(retry_request, retry_response, on_chunk, retry_error)) {
+        if (chat(retry_request, retry_response, on_chunk, retry_error, cancel_flag)) {
           response = std::move(retry_response);
           std::cerr << "[debug][tool-stream-fallback] recovered via non-stream retry for tool '"
                     << failing_tool_name << "' id=" << failing_tool_id << "\n";

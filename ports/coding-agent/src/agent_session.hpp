@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
@@ -290,6 +291,11 @@ class AgentSession {
     /// Set event handler.
     void set_event_handler(AgentEventHandler handler);
 
+    /// Optional gate for bash commands that match destructive heuristics (session-layer; mirrors TS
+    /// `tool_call` extensions). When unset, destructive-looking bash calls are blocked with an error
+    /// (non-interactive default). Interactive mode sets this to prompt via the controlling terminal.
+    void set_destructive_bash_confirm(std::function<bool(const std::string& command)> fn);
+
     /// Switch to a new session manager.
     void switchSession(std::unique_ptr<SessionManager> new_session);
 
@@ -488,6 +494,8 @@ class AgentSession {
     bool retry_in_progress_ = false;
     std::condition_variable retry_cv_;
     std::mutex retry_mutex_;
+    std::optional<std::chrono::steady_clock::time_point> retry_deadline_;
+    std::function<bool(const std::string&)> destructive_bash_confirm_;
 
     // ====================================================================
     // Event Helpers

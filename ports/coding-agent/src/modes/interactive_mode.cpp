@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cctype>
 #include <csignal>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -28,6 +29,31 @@ const char* COLOR_GREEN  = "\033[0;32m";
 const char* COLOR_YELLOW = "\033[0;33m";
 const char* COLOR_RED    = "\033[0;31m";
 const char* COLOR_RESET  = "\033[0m";
+
+bool confirm_destructive_bash_on_tty(const std::string& command) {
+    std::cerr << "Destructive bash command requested:\n"
+              << command << "\nAllow execution? [y/N]: " << std::flush;
+    std::ifstream tty("/dev/tty");
+    if (!tty) {
+        std::cerr << "(cannot open /dev/tty for confirmation)\n";
+        return false;
+    }
+    std::string answer;
+    std::getline(tty, answer);
+    std::string normalized = answer;
+    const auto first = normalized.find_first_not_of(" \t\r\n");
+    if (first != std::string::npos) {
+        normalized.erase(0, first);
+    }
+    const auto last = normalized.find_last_not_of(" \t\r\n");
+    if (last != std::string::npos) {
+        normalized.erase(last + 1);
+    }
+    for (char& ch : normalized) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return normalized == "y" || normalized == "yes";
+}
 
 std::string format_token_budget(const AgentSession& agent) {
     const auto& cfg    = agent.session_config();
@@ -92,6 +118,8 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug) {
     sigaction(SIGINT, &sa, nullptr);
 
     global_cancel_flag.store(false, std::memory_order_release);
+
+    agent.set_destructive_bash_confirm(confirm_destructive_bash_on_tty);
 
     const auto& cfg = agent.session_config();
 

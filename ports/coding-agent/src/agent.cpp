@@ -93,25 +93,28 @@ int run_agent(int argc, char** argv) {
 
     const std::string workspace_sessions = session_directory_for_cwd(config->cwd);
 
-    // Branch summary: detect previous session and generate summary if needed.
+    // Branch summary: detect previous session and generate summary if needed (single open of source session).
     std::optional<std::filesystem::path> handoff_old_file;
     std::optional<std::string> handoff_old_leaf;
+    std::unique_ptr<SessionManager> handoff_old_mgr;
     if (config->branch_summary) {
         if (config->new_session) {
             if (const auto prev = latest_session_path_in_dir(workspace_sessions); prev.has_value()) {
-                auto prev_mgr = SessionManager::open(prev->string(), "", config->cwd);
-                if (prev_mgr && prev_mgr->getLeafId().has_value()) {
+                auto mgr = SessionManager::open(prev->string(), "", config->cwd);
+                if (mgr && mgr->getLeafId().has_value()) {
                     handoff_old_file = prev;
-                    handoff_old_leaf = prev_mgr->getLeafId().value();
+                    handoff_old_leaf = mgr->getLeafId().value();
+                    handoff_old_mgr    = std::move(mgr);
                 }
             }
         } else if (config->session_id.has_value()) {
             if (const auto latest = latest_session_path_in_dir(workspace_sessions); latest.has_value()) {
                 if (latest->stem().string() != config->session_id.value()) {
-                    auto latest_mgr = SessionManager::open(latest->string(), "", config->cwd);
-                    if (latest_mgr && latest_mgr->getLeafId().has_value()) {
+                    auto mgr = SessionManager::open(latest->string(), "", config->cwd);
+                    if (mgr && mgr->getLeafId().has_value()) {
                         handoff_old_file = latest;
-                        handoff_old_leaf = latest_mgr->getLeafId().value();
+                        handoff_old_leaf = mgr->getLeafId().value();
+                        handoff_old_mgr    = std::move(mgr);
                     }
                 }
             }
@@ -132,29 +135,26 @@ int run_agent(int argc, char** argv) {
         session_mgr = SessionManager::continueRecent(config->cwd, "");
     }
 
-    if (config->branch_summary && handoff_old_file.has_value() && handoff_old_leaf.has_value()) {
-        auto old_mgr = SessionManager::open(handoff_old_file->string(), "", config->cwd);
-        if (old_mgr) {
-            const std::vector<SessionEntry> collected =
-                collect_entries_for_branch_summary(*old_mgr, handoff_old_leaf.value(), "");
-            std::string gen_error;
-            std::cerr << "Summarizing previous session...\n" << std::flush;
-            const BranchSummaryResult branch_result = generate_branch_summary(
-                collected,
-                provider,
-                config->model,
-                config->context_size,
-                config->compaction_reserve_tokens,
-                gen_error
-            );
-            nlohmann::json branch_details;
-            branch_details["source_session_id"]    = handoff_old_file->stem().string();
-            branch_details["read_files"]         = branch_result.read_files;
-            branch_details["modified_files"]     = branch_result.modified_files;
-            branch_details["handoff_source_leaf_id"] = handoff_old_leaf.value();
-            session_mgr->appendBranchSummary(handoff_old_leaf.value(), branch_result.summary,
-                                             std::make_optional(branch_details));
-        }
+    if (config->branch_summary && handoff_old_mgr && handoff_old_leaf.has_value()) {
+        const std::vector<SessionEntry> collected =
+            collect_entries_for_branch_summary(*handoff_old_mgr, handoff_old_leaf.value(), "");
+        std::string gen_error;
+        std::cerr << "Summarizing previous session...\n" << std::flush;
+        const BranchSummaryResult branch_result = generate_branch_summary(
+            collected,
+            provider,
+            config->model,
+            config->context_size,
+            config->compaction_reserve_tokens,
+            gen_error
+        );
+        nlohmann::json branch_details;
+        branch_details["source_session_id"]    = handoff_old_file->stem().string();
+        branch_details["read_files"]           = branch_result.read_files;
+        branch_details["modified_files"]       = branch_result.modified_files;
+        branch_details["handoff_source_leaf_id"] = handoff_old_leaf.value();
+        session_mgr->appendBranchSummary(handoff_old_leaf.value(), branch_result.summary,
+                                         std::make_optional(branch_details));
     }
 
     AgentSession agent(make_session_config(config.value()), provider, tools, std::move(session_mgr));

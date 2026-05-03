@@ -1,7 +1,9 @@
 #include "session_entry.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -42,10 +44,35 @@ namespace {
 
 using nlohmann::json;
 
+void seed_mt19937(std::mt19937& rng) {
+  std::array<std::uint32_t, 8> data{};
+  std::ifstream urandom("/dev/urandom", std::ios::binary);
+  if (urandom) {
+    urandom.read(reinterpret_cast<char*>(data.data()), data.size() * sizeof(std::uint32_t));
+    if (urandom) {
+      std::seed_seq seq(data.begin(), data.end());
+      rng.seed(seq);
+      return;
+    }
+  }
+  std::random_device rd;
+  std::seed_seq seq{rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd()};
+  rng.seed(seq);
+}
+
+std::mt19937& thread_local_rng() {
+  static thread_local std::mt19937 rng = [] {
+    std::mt19937 r;
+    seed_mt19937(r);
+    return r;
+  }();
+  return rng;
+}
+
 // Collision-checked 8-hex-char ID generator.
 // Tries up to 100 random IDs before falling back to a full UUID.
 std::string generateId(std::unordered_set<std::string>& usedIds) {
-  static thread_local std::mt19937 rng(std::random_device{}());
+  std::mt19937& rng = thread_local_rng();
   static const char hex[] = "0123456789abcdef";
 
   for (int i = 0; i < 100; ++i) {

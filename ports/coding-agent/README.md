@@ -117,7 +117,7 @@ Settings file (optional):
 - Provider integration targets OpenAI-compatible `POST /v1/chat/completions`.
 - Tool-call chunks are parsed from both non-stream and SSE stream responses.
 - `nlohmann/json` is fetched automatically during CMake configure via `FetchContent`.
-- The `bash` tool prompts for confirmation before running commands that look destructive (for example `rm`, `git reset --hard`, or `git clean -fd`).
+- In **interactive** mode, the session layer (not the `bash` tool) may prompt on the controlling terminal for commands that look destructive (for example `rm`, `git reset --hard`, or `git clean -fd`). **Print** / non-interactive runs block those commands unless you add a custom `set_destructive_bash_confirm` handler.
 - Compaction triggers when estimated context tokens are above `context_size - compaction_reserve_tokens`.
 - Compaction keeps a recent tail (`compaction_keep_recent_tokens`) and summarizes only older history.
 - Compaction failures are surfaced as runtime errors (not silently ignored).

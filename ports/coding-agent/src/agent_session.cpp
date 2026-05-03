@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -15,6 +16,7 @@
 #include "file_ops.hpp"
 #include "session_entry.hpp"
 #include "system_prompt.hpp"
+#include "tools/bash_destructive.hpp"
 
 namespace coding_agent {
 namespace {
@@ -164,6 +166,10 @@ AgentSession::AgentSession(const AgentSessionConfig& config,
 }
 
 AgentSession::~AgentSession() = default;
+
+void AgentSession::set_destructive_bash_confirm(std::function<bool(const std::string& command)> fn) {
+    destructive_bash_confirm_ = std::move(fn);
+}
 
 // ============================================================================
 // Run Loop
@@ -690,6 +696,7 @@ bool AgentSession::run_turn(const std::string& user_input,
         emit_event(end_ev.type, end_ev);
         on_chunk("[retry] Success after " + std::to_string(retry_attempt_) + " attempts\n");
         retry_attempt_ = 0;
+        retry_deadline_.reset();
         resolve_retry();
     }
 
@@ -741,7 +748,32 @@ bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
 
         on_chunk("[tool: " + call.name + "] " + describe_tool_call(call.name, call.arguments_json) + "\n");
 
-        const ToolResult result = tools_.dispatch(call.name, call.arguments_json, config_.cwd);
+        ToolResult result{.ok = false, .content = {}};
+        bool run_dispatch = true;
+        if (call.name == "bash") {
+            try {
+                const auto args = nlohmann::json::parse(call.arguments_json);
+                const std::string command = args.at("command").get<std::string>();
+                if (bash_command_looks_destructive(command)) {
+                    if (!destructive_bash_confirm_) {
+                        run_dispatch = false;
+                        result = {.ok = false,
+                                  .content = "Dangerous command blocked (no interactive confirmation "
+                                             "handler); use interactive mode to confirm destructive commands."};
+                    } else if (!destructive_bash_confirm_(command)) {
+                        run_dispatch = false;
+                        result = {.ok = false,
+                                  .content = "Blocked destructive command: user did not allow execution"};
+                    }
+                }
+            } catch (const std::exception& ex) {
+                run_dispatch = false;
+                result = {.ok = false, .content = ex.what()};
+            }
+        }
+        if (run_dispatch) {
+            result = tools_.dispatch(call.name, call.arguments_json, config_.cwd);
+        }
 
         on_chunk("[tool: " + call.name + "] " +
                  (result.ok ? "done" : "failed: " + result.content) + "\n");
@@ -1038,111 +1070,141 @@ bool AgentSession::handle_retryable_error(const ChunkCallback& on_chunk,
     if (!config_.retry_enabled) return false;
     if (retry_in_progress_) return false;
 
-    // We need the error message - it should be available via last_turn_debug_
     const std::string& error_text = last_turn_debug_.provider_error;
     if (!is_retryable_error(error_text)) return false;
 
-    retry_in_progress_ = true;
-    retry_attempt_++;
+    while (true) {
+        retry_in_progress_ = true;
+        ++retry_attempt_;
 
-    if (retry_attempt_ > config_.retry_max_retries) {
-        retry_in_progress_ = false;
-        retry_cv_.notify_all();
-        on_chunk("[retry] Failed after " + std::to_string(config_.retry_max_retries) +
-                 " attempts: " + error_text + "\n");
-        return false;
-    }
-
-    // Calculate backoff delay
-    int delay_ms = config_.retry_base_delay_ms;
-    for (int i = 1; i < retry_attempt_; ++i) {
-        delay_ms *= 2;
-    }
-    delay_ms = std::min(delay_ms, config_.retry_max_retry_delay_ms);
-
-    // Emit auto_retry_start event
-    AgentEvent start_ev{};
-    start_ev.type = AgentEvent::Type::AutoRetryStart;
-    start_ev.retry_attempt = retry_attempt_;
-    start_ev.retry_max_attempts = config_.retry_max_retries;
-    start_ev.retry_delay_ms = delay_ms;
-    start_ev.retry_error_message = error_text;
-    emit_event(start_ev.type, start_ev);
-
-    on_chunk("[retry #" + std::to_string(retry_attempt_) + "/" +
-             std::to_string(config_.retry_max_retries) + "] Waiting " +
-             std::to_string(delay_ms) + "ms before retry...\n");
-
-    // Sleep for delay_ms (interruptible by cancel flag)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-
-        if (cancel_flag && cancel_flag->load()) {
+        if (retry_attempt_ > config_.retry_max_retries) {
             retry_in_progress_ = false;
+            retry_attempt_     = 0;
+            retry_deadline_.reset();
             retry_cv_.notify_all();
-            on_chunk("[retry] Cancelled\n");
+            on_chunk("[retry] Failed after " + std::to_string(config_.retry_max_retries) +
+                     " attempts: " + error_text + "\n");
             return false;
         }
-    }
 
-    // Call provider again with the same messages
-    ChatResponse response;
-    std::string error;
-    const bool success = call_provider(
-        messages_,
-        active_tool_definitions(),
-        response,
-        error,
-        on_chunk,
-        cancel_flag
-    );
+        if (retry_attempt_ == 1 && config_.retry_timeout_ms > 0) {
+            retry_deadline_ = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(config_.retry_timeout_ms);
+        }
 
-    if (success) {
-        // Append assistant message
-        ChatMessage assistant{
-            .role         = "assistant",
-            .content      = response.content,
-            .tool_calls   = response.tool_calls,
-            .usage_tokens = response.completion_tokens,
-        };
-        assistant.entry_id = session_->appendMessage(assistant);
-        messages_.push_back(assistant);
+        int delay_ms = config_.retry_base_delay_ms;
+        for (int i = 1; i < retry_attempt_; ++i) {
+            delay_ms *= 2;
+        }
+        delay_ms = std::min(delay_ms, config_.retry_max_retry_delay_ms);
 
-        // Emit auto_retry_end event
-        AgentEvent end_ev{};
-        end_ev.type = AgentEvent::Type::AutoRetryEnd;
-        end_ev.retry_success = true;
-        end_ev.retry_attempt = retry_attempt_;
-        emit_event(end_ev.type, end_ev);
+        if (retry_deadline_.has_value()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= retry_deadline_.value()) {
+                retry_in_progress_ = false;
+                retry_attempt_     = 0;
+                retry_deadline_.reset();
+                retry_cv_.notify_all();
+                on_chunk("[retry] Aborted: exceeded retry_timeout_ms\n");
+                return false;
+            }
+            const auto remaining_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(retry_deadline_.value() - now)
+                    .count();
+            delay_ms = std::min(delay_ms, static_cast<int>(std::max<std::int64_t>(0, remaining_ms)));
+        }
 
-        on_chunk("[retry] Success after " + std::to_string(retry_attempt_) +
-                 " attempts\n");
+        AgentEvent start_ev{};
+        start_ev.type                = AgentEvent::Type::AutoRetryStart;
+        start_ev.retry_attempt       = retry_attempt_;
+        start_ev.retry_max_attempts  = config_.retry_max_retries;
+        start_ev.retry_delay_ms      = delay_ms;
+        start_ev.retry_error_message = error_text;
+        emit_event(start_ev.type, start_ev);
+
+        on_chunk("[retry #" + std::to_string(retry_attempt_) + "/" +
+                 std::to_string(config_.retry_max_retries) + "] Waiting " +
+                 std::to_string(delay_ms) + "ms before retry...\n");
+
+        {
+            const auto sleep_until =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms);
+            while (std::chrono::steady_clock::now() < sleep_until) {
+                if (cancel_flag && cancel_flag->load()) {
+                    retry_in_progress_ = false;
+                    retry_attempt_     = 0;
+                    retry_deadline_.reset();
+                    retry_cv_.notify_all();
+                    on_chunk("[retry] Cancelled\n");
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }
+
+        ChatResponse response;
+        std::string error;
+        const bool success = call_provider(
+            messages_,
+            active_tool_definitions(),
+            response,
+            error,
+            on_chunk,
+            cancel_flag
+        );
+
+        if (success) {
+            ChatMessage assistant{
+                .role         = "assistant",
+                .content      = response.content,
+                .tool_calls   = response.tool_calls,
+                .usage_tokens = response.completion_tokens,
+            };
+            assistant.entry_id = session_->appendMessage(assistant);
+            messages_.push_back(assistant);
+
+            AgentEvent end_ev{};
+            end_ev.type           = AgentEvent::Type::AutoRetryEnd;
+            end_ev.retry_success  = true;
+            end_ev.retry_attempt  = retry_attempt_;
+            emit_event(end_ev.type, end_ev);
+
+            on_chunk("[retry] Success after " + std::to_string(retry_attempt_) + " attempts\n");
+
+            retry_attempt_ = 0;
+            retry_deadline_.reset();
+            resolve_retry();
+            return true;
+        }
+
+        AgentEvent fail_ev{};
+        fail_ev.type             = AgentEvent::Type::AutoRetryEnd;
+        fail_ev.retry_success    = false;
+        fail_ev.retry_attempt    = retry_attempt_;
+        fail_ev.retry_final_error = error;
+        emit_event(fail_ev.type, fail_ev);
+
+        if (is_retryable_error(error) && retry_attempt_ < config_.retry_max_retries) {
+            if (retry_deadline_.has_value() &&
+                std::chrono::steady_clock::now() >= retry_deadline_.value()) {
+                on_chunk("[retry] Aborted: exceeded retry_timeout_ms\n");
+                retry_attempt_ = 0;
+                retry_deadline_.reset();
+                resolve_retry();
+                return false;
+            }
+            resolve_retry();
+            continue;
+        }
+
+        on_chunk("[retry] Failed after " + std::to_string(retry_attempt_) + " attempts: " + error +
+                 "\n");
 
         retry_attempt_ = 0;
+        retry_deadline_.reset();
         resolve_retry();
-        return true;
+        return false;
     }
-
-    // Retry failed with another error
-    AgentEvent end_ev{};
-    end_ev.type = AgentEvent::Type::AutoRetryEnd;
-    end_ev.retry_success = false;
-    end_ev.retry_attempt = retry_attempt_;
-    end_ev.retry_final_error = error;
-    emit_event(end_ev.type, end_ev);
-
-    if (is_retryable_error(error) && retry_attempt_ < config_.retry_max_retries) {
-        // Another retryable error - loop back to retry
-        resolve_retry();
-        return handle_retryable_error(on_chunk, cancel_flag);
-    }
-
-    on_chunk("[retry] Failed after " + std::to_string(retry_attempt_) +
-             " attempts: " + error + "\n");
-
-    retry_attempt_ = 0;
-    resolve_retry();
-    return false;
 }
 
 // ============================================================================

@@ -26,6 +26,8 @@ class LlamaCppProvider final : public Provider {
   std::string api_key_;
   std::atomic<bool> interrupted_ = false;
   CURL* active_curl_ = nullptr;
+  std::atomic<bool> fallback_cancel_{false};
+  std::atomic<bool>* active_cancel_flag_ = nullptr;
 };
 
 }  // namespace coding_agent

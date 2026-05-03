@@ -32,6 +32,8 @@ struct Config {
   bool branch_summary;
   /// Comma-separated tool names exposed to the model (must match registered tools).
   std::string initial_active_tools;
+  /// Tool execution mode: "sequential" (default) or "parallel".
+  std::string tool_execution_mode = "sequential";
   /// After each interactive prompt, print turn diagnostics (tail of assistant text, rounds, etc.).
   bool interactive_debug = true;
   /// When the model ends with no tools and empty text, append a nudge user message and retry (0 = off).

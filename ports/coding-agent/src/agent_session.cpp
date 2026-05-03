@@ -748,64 +748,141 @@ bool AgentSession::call_provider(const std::vector<ChatMessage>& history,
 // Internal: execute_tools
 // ============================================================================
 
+// Execute a single tool and return the result (no event emission).
+// Used by both sequential and parallel execution paths.
+ToolResult AgentSession::execute_single_tool_raw(const ToolCall& call,
+                                                  const ChunkCallback& on_chunk) {
+    (void)on_chunk;  // on_chunk is used for display in the caller
+    ToolResult result{.ok = false, .content = {}};
+    bool run_dispatch = true;
+    if (call.name == "bash") {
+        try {
+            const auto args = nlohmann::json::parse(call.arguments_json);
+            const std::string command = args.at("command").get<std::string>();
+            if (bash_command_looks_destructive(command)) {
+                if (!destructive_bash_confirm_) {
+                    run_dispatch = false;
+                    result = {.ok = false,
+                              .content = "Dangerous command blocked (no interactive confirmation "
+                                         "handler); use interactive mode to confirm destructive commands."};
+                } else if (!destructive_bash_confirm_(command)) {
+                    run_dispatch = false;
+                    result = {.ok = false,
+                              .content = "Blocked destructive command: user did not allow execution"};
+                }
+            }
+        } catch (const std::exception& ex) {
+            run_dispatch = false;
+            result = {.ok = false, .content = ex.what()};
+        }
+    }
+    if (run_dispatch) {
+        result = tools_.dispatch(call.name, call.arguments_json, config_.cwd);
+    }
+    return result;
+}
+
+// Emit tool result event and append tool message (thread-safe via mutex).
+void AgentSession::emit_tool_result(const ToolCall& call,
+                                    const ToolResult& result) {
+    std::lock_guard<std::mutex> lock(tool_dispatch_mutex_);
+
+    AgentEvent res_ev{};
+    res_ev.type         = AgentEvent::Type::ToolResult;
+    res_ev.tool_name    = call.name;
+    res_ev.tool_call_id = call.id;
+    res_ev.tool_result  = result.content;
+    res_ev.tool_error   = !result.ok;
+    emit_event(res_ev.type, res_ev);
+
+    ChatMessage tool_msg{
+        .role         = "tool",
+        .content      = (result.ok ? "ok" : "error") + std::string(": ") + result.content,
+        .tool_call_id = call.id,
+    };
+    tool_msg.entry_id = session_->appendMessage(tool_msg);
+    messages_.push_back(tool_msg);
+}
+
+// Execute a single tool, emitting events and appending messages (sequential path).
+void AgentSession::execute_single_tool(const ToolCall& call,
+                                       const ChunkCallback& on_chunk) {
+    AgentEvent call_ev{};
+    call_ev.type         = AgentEvent::Type::ToolCall;
+    call_ev.tool_name    = call.name;
+    call_ev.tool_call_id = call.id;
+    call_ev.tool_args    = call.arguments_json;
+    emit_event(call_ev.type, call_ev);
+
+    on_chunk("[tool: " + call.name + "] " + describe_tool_call(call.name, call.arguments_json) + "\n");
+
+    ToolResult result = execute_single_tool_raw(call, on_chunk);
+
+    on_chunk("[tool: " + call.name + "] " +
+             (result.ok ? "done" : "failed: " + result.content) + "\n");
+
+    emit_tool_result(call, result);
+}
+
 bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
                                  const ChunkCallback& on_chunk) {
+    if (tool_calls.empty()) return true;
+
+    const bool parallel = config_.tool_execution_mode == "parallel";
+
+    if (!parallel || tool_calls.size() == 1) {
+        // Sequential execution (default or single tool)
+        for (const auto& call : tool_calls) {
+            execute_single_tool(call, on_chunk);
+        }
+        return true;
+    }
+
+    // Parallel execution: emit ToolCall events and UI lines in assistant order (main thread),
+    // run dispatches concurrently, then emit tool results and chunks in the same order.
+    struct ToolWorkItem {
+        ToolCall call;
+        ToolResult result;
+    };
+
+    std::vector<ToolWorkItem> work_items;
+    work_items.reserve(tool_calls.size());
     for (const auto& call : tool_calls) {
+        work_items.push_back(ToolWorkItem{.call = call, .result = {.ok = false, .content = ""}});
+    }
+
+    for (const auto& item : work_items) {
         AgentEvent call_ev{};
         call_ev.type         = AgentEvent::Type::ToolCall;
-        call_ev.tool_name    = call.name;
-        call_ev.tool_call_id = call.id;
-        call_ev.tool_args    = call.arguments_json;
+        call_ev.tool_name    = item.call.name;
+        call_ev.tool_call_id = item.call.id;
+        call_ev.tool_args    = item.call.arguments_json;
         emit_event(call_ev.type, call_ev);
-
-        on_chunk("[tool: " + call.name + "] " + describe_tool_call(call.name, call.arguments_json) + "\n");
-
-        ToolResult result{.ok = false, .content = {}};
-        bool run_dispatch = true;
-        if (call.name == "bash") {
-            try {
-                const auto args = nlohmann::json::parse(call.arguments_json);
-                const std::string command = args.at("command").get<std::string>();
-                if (bash_command_looks_destructive(command)) {
-                    if (!destructive_bash_confirm_) {
-                        run_dispatch = false;
-                        result = {.ok = false,
-                                  .content = "Dangerous command blocked (no interactive confirmation "
-                                             "handler); use interactive mode to confirm destructive commands."};
-                    } else if (!destructive_bash_confirm_(command)) {
-                        run_dispatch = false;
-                        result = {.ok = false,
-                                  .content = "Blocked destructive command: user did not allow execution"};
-                    }
-                }
-            } catch (const std::exception& ex) {
-                run_dispatch = false;
-                result = {.ok = false, .content = ex.what()};
-            }
-        }
-        if (run_dispatch) {
-            result = tools_.dispatch(call.name, call.arguments_json, config_.cwd);
-        }
-
-        on_chunk("[tool: " + call.name + "] " +
-                 (result.ok ? "done" : "failed: " + result.content) + "\n");
-
-        AgentEvent res_ev{};
-        res_ev.type         = AgentEvent::Type::ToolResult;
-        res_ev.tool_name    = call.name;
-        res_ev.tool_call_id = call.id;
-        res_ev.tool_result  = result.content;
-        res_ev.tool_error   = !result.ok;
-        emit_event(res_ev.type, res_ev);
-
-        ChatMessage tool_msg{
-            .role         = "tool",
-            .content      = (result.ok ? "ok" : "error") + std::string(": ") + result.content,
-            .tool_call_id = call.id,
-        };
-        tool_msg.entry_id = session_->appendMessage(tool_msg);
-        messages_.push_back(tool_msg);
+        on_chunk("[tool: " + item.call.name + "] " +
+                 describe_tool_call(item.call.name, item.call.arguments_json) + "\n");
     }
+
+    std::vector<std::thread> threads;
+    threads.reserve(tool_calls.size());
+    for (size_t i = 0; i < tool_calls.size(); ++i) {
+        threads.emplace_back([this, &work_items, i]() {
+            auto& item      = work_items[i];
+            item.result     = execute_single_tool_raw(item.call, [](const std::string&) {});
+        });
+    }
+
+    for (auto& t : threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
+    for (const auto& item : work_items) {
+        on_chunk("[tool: " + item.call.name + "] " +
+                 (item.result.ok ? "done" : "failed: " + item.result.content) + "\n");
+        emit_tool_result(item.call, item.result);
+    }
+
     return true;
 }
 

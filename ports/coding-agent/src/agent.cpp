@@ -48,6 +48,7 @@ AgentSessionConfig make_session_config(const Config& c) {
     cfg.compaction_fail_fast       = c.compaction_fail_fast;
     cfg.auto_compaction            = true;
     cfg.initial_active_tools       = c.initial_active_tools;
+    cfg.tool_execution_mode        = c.tool_execution_mode;
     cfg.interactive_debug          = c.interactive_debug;
     cfg.max_empty_completion_nudges = c.max_empty_completion_nudges;
     cfg.retry_enabled              = c.retry_enabled;

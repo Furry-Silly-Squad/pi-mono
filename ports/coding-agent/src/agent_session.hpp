@@ -5,8 +5,10 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "compaction.hpp"
@@ -178,6 +180,9 @@ struct AgentSessionConfig {
     int retry_base_delay_ms = 1000;
     int retry_max_retry_delay_ms = 60000;
     int retry_timeout_ms = 30000;
+
+    // Tool execution mode: "sequential" (default) or "parallel"
+    std::string tool_execution_mode = "sequential";
 
     // Callbacks
     AgentEventHandler on_event;
@@ -440,6 +445,19 @@ class AgentSession {
     bool execute_tools(const std::vector<ToolCall>& tool_calls,
                        const ChunkCallback& on_chunk);
 
+    // Execute a single tool and return the result (no event emission).
+    // Used by both sequential and parallel execution paths.
+    ToolResult execute_single_tool_raw(const ToolCall& call,
+                                       const ChunkCallback& on_chunk);
+
+    // Execute a single tool, emitting events and appending messages (sequential path).
+    void execute_single_tool(const ToolCall& call,
+                             const ChunkCallback& on_chunk);
+
+    // Emit tool result event and append tool message (thread-safe via mutex).
+    void emit_tool_result(const ToolCall& call,
+                          const ToolResult& result);
+
     std::vector<ToolDefinition> active_tool_definitions() const;
 
     bool check_and_compact(const ChunkCallback& on_chunk);
@@ -469,6 +487,7 @@ class AgentSession {
     std::string current_system_prompt_;
     std::vector<std::string> active_tool_names_;
 
+    std::mutex tool_dispatch_mutex_;
     std::atomic<bool> running_{false};
     std::atomic<bool> compacting_{false};
     std::atomic<bool> abort_requested_{false};

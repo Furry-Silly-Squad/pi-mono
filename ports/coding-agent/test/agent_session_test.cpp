@@ -546,6 +546,91 @@ bool test_thinking_and_model() {
 }
 
 // ===========================================================================
+// Test 7: Parallel tool execution
+// ===========================================================================
+
+class LsTool final : public coding_agent::Tool {
+ public:
+  std::string name() const override { return "ls"; }
+  std::string description() const override { return "list directory contents"; }
+  std::string parameters_schema() const override { return R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"; }
+  coding_agent::ToolResult execute(const std::string& /*args_json*/, const std::string& /*cwd*/) override {
+    ++call_count_;
+    return coding_agent::ToolResult{.ok = true, .content = "dir listing"};
+  }
+  int call_count() const { return call_count_; }
+ private:
+  int call_count_ = 0;
+};
+
+bool test_parallel_tool_execution() {
+  const fs::path session_dir = make_temp_dir("parallel");
+
+  ScriptedProvider provider;
+  // First response: assistant requests 3 parallel tools.
+  coding_agent::ChatResponse with_tools;
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_1", .name = "echo", .arguments_json = R"json({"text":"a"})json",
+  });
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_2", .name = "ls", .arguments_json = R"json({"path":"/"})json",
+  });
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_3", .name = "noop", .arguments_json = "{}",
+  });
+  with_tools.completion_tokens = 10;
+  provider.enqueue(with_tools);
+
+  // Second response: assistant answers without tools.
+  coding_agent::ChatResponse done;
+  done.content = "ok done";
+  done.completion_tokens = 3;
+  provider.enqueue(done);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<EchoTool>());
+  tools.register_tool(std::make_unique<LsTool>());
+  tools.register_tool(std::make_unique<NoopTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.initial_active_tools = "echo,ls,noop";
+  cfg.tool_execution_mode = "parallel";
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  std::vector<coding_agent::AgentEvent::Type> events;
+  agent.set_event_handler([&events](const coding_agent::AgentEvent& ev) {
+    events.push_back(ev.type);
+  });
+
+  const bool ok = agent.run("parallel test", [](const std::string&) {});
+  EXPECT(ok, "parallel tool execution must succeed");
+  EXPECT(provider.call_count() == 2, "two provider calls (with-tools, then final)");
+
+  // Verify all 3 tools ran: system + user + assistant(tool_calls) + 3 tool messages + assistant = 7
+  EXPECT(agent.message_count() == 7, "expected 7 messages after parallel tool round");
+
+  // Event order for parallel:
+  //   TurnStart, ModelCallStart, ToolCall(echo), ToolCall(ls), ToolCall(noop),
+  //   ToolResult(echo), ToolResult(ls), ToolResult(noop), ModelCallStart, TurnEnd
+  EXPECT(events.size() == 10, "expected 10 events for parallel tool round");
+  EXPECT(events[0] == coding_agent::AgentEvent::Type::TurnStart, "TurnStart");
+  EXPECT(events[1] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #1");
+  EXPECT(events[2] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #1 (echo)");
+  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2 (ls)");
+  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #3 (noop)");
+  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
+  EXPECT(events[6] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2");
+  EXPECT(events[7] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #3");
+  EXPECT(events[8] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #2");
+  EXPECT(events[9] == coding_agent::AgentEvent::Type::TurnEnd, "TurnEnd");
+
+  return true;
+}
+
+// ===========================================================================
 // Test: empty assistant completion triggers automatic user nudge + retry
 // ===========================================================================
 
@@ -611,6 +696,7 @@ int main() {
       {"manual_compact", test_manual_compact},
       {"interrupt_rolls_back_user", test_interrupt_rolls_back_user},
       {"thinking_and_model", test_thinking_and_model},
+      {"parallel_tool_execution", test_parallel_tool_execution},
       {"empty_completion_nudge", test_empty_completion_nudge},
   };
 

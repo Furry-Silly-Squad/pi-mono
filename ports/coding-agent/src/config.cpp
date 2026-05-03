@@ -109,6 +109,8 @@ void print_usage() {
       << "                            Skip compaction on failure instead of aborting\n"
       << "  --no-branch-summary       Skip branch summarization when starting a new session or switching sessions\n"
       << "  --active-tools <csv>      Comma-separated tool names for the model (default: read,bash,edit,write)\n"
+      << "  --tool-execution-mode <sequential|parallel>\n"
+      << "                            Tool execution mode (default: sequential)\n"
       << "  --interactive-debug       Print turn diagnostics after each reply (default: on)\n"
       << "  --no-interactive-debug    Disable turn diagnostics in interactive mode\n"
       << "  --max-empty-nudges <n>   When the model returns no text and no tools, nudge and retry (default: 2, 0=off)\n"
@@ -126,6 +128,7 @@ void print_usage() {
       << "  CODING_AGENT_MODEL\n"
       << "  CODING_AGENT_API_KEY\n"
       << "  CODING_AGENT_MAX_TOOL_ITERATIONS\n"
+      << "  CODING_AGENT_TOOL_EXECUTION_MODE\n"
       << "  CODING_AGENT_INTERACTIVE_DEBUG   1/0 — turn diagnostics in interactive mode\n"
       << "  CODING_AGENT_MAX_EMPTY_NUDGES    empty-completion retries per user turn (default 2)\n"
       << "Settings file:\n"
@@ -157,6 +160,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .compaction_fail_fast = true,
       .branch_summary = true,
       .initial_active_tools = "read,bash,edit,write",
+      .tool_execution_mode = "sequential",
       .interactive_debug = true,
       .max_empty_completion_nudges = 2,
       .retry_enabled = true,
@@ -177,6 +181,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     load_optional(settings.value(), "compaction_keep_recent_tokens", config.compaction_keep_recent_tokens);
     load_optional(settings.value(), "compaction_fail_fast", config.compaction_fail_fast);
     load_optional(settings.value(), "initial_active_tools", config.initial_active_tools);
+    load_optional(settings.value(), "tool_execution_mode", config.tool_execution_mode);
     load_optional(settings.value(), "interactive_debug", config.interactive_debug);
     load_optional(settings.value(), "max_empty_completion_nudges", config.max_empty_completion_nudges);
     load_optional(settings.value(), "retry_enabled", config.retry_enabled);
@@ -220,6 +225,20 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       error = "Invalid value for CODING_AGENT_MAX_TOOL_ITERATIONS";
       return std::nullopt;
     }
+  }
+
+  if (const char* tem = std::getenv("CODING_AGENT_TOOL_EXECUTION_MODE"); tem != nullptr) {
+    const std::string mode(tem);
+    if (mode != "sequential" && mode != "parallel") {
+      error = "CODING_AGENT_TOOL_EXECUTION_MODE must be sequential or parallel";
+      return std::nullopt;
+    }
+    config.tool_execution_mode = mode;
+  }
+
+  if (config.tool_execution_mode != "sequential" && config.tool_execution_mode != "parallel") {
+    error = "tool_execution_mode must be sequential or parallel";
+    return std::nullopt;
   }
 
   if (config.provider.empty()) {
@@ -340,6 +359,15 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     }
     if (arg == "--active-tools" && i + 1 < argc) {
       config.initial_active_tools = argv[++i];
+      continue;
+    }
+    if (arg == "--tool-execution-mode" && i + 1 < argc) {
+      const std::string mode = argv[++i];
+      if (mode != "sequential" && mode != "parallel") {
+        error = "Invalid value for --tool-execution-mode (expected sequential or parallel)";
+        return std::nullopt;
+      }
+      config.tool_execution_mode = mode;
       continue;
     }
     if (arg == "--interactive-debug") {

@@ -80,6 +80,35 @@ bool near_compaction_threshold(const AgentSession& agent) {
     return (budget - total) < (budget / 10);
 }
 
+const char* queue_mode_name(QueueMode mode) {
+    return mode == QueueMode::All ? "all" : "one-at-a-time";
+}
+
+void print_queue_state(const AgentSession& agent) {
+    const auto& steering = agent.steering_messages();
+    const auto& follow_up = agent.follow_up_messages();
+    std::cout << "\n=== Queue State ===\n";
+    std::cout << "Steering mode:  " << queue_mode_name(agent.steering_mode()) << "\n";
+    std::cout << "Follow-up mode: " << queue_mode_name(agent.follow_up_mode()) << "\n";
+    std::cout << "Steering queue (" << steering.size() << "):\n";
+    if (steering.empty()) {
+        std::cout << "  (empty)\n";
+    } else {
+        for (size_t i = 0; i < steering.size(); ++i) {
+            std::cout << "  " << (i + 1) << ". " << steering[i] << "\n";
+        }
+    }
+    std::cout << "Follow-up queue (" << follow_up.size() << "):\n";
+    if (follow_up.empty()) {
+        std::cout << "  (empty)\n";
+    } else {
+        for (size_t i = 0; i < follow_up.size(); ++i) {
+            std::cout << "  " << (i + 1) << ". " << follow_up[i] << "\n";
+        }
+    }
+    std::cout << "===================\n\n";
+}
+
 void print_interactive_turn_debug(const AgentSession& agent) {
     const TurnDebugInfo& d = agent.last_turn_debug();
     const auto& cfg       = agent.session_config();
@@ -171,7 +200,7 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug) {
                       << "Keep recent:      " << cfg.compaction_keep_recent_tokens << "\n"
                       << "Model:            " << agent.model() << "\n"
                       << "Thinking level:   " << thinking_level_to_string(agent.thinking_level()) << "\n"
-                      << "\nCommands: /compact, /stats, /tokens, /thinking, /new, /branch, /exit\n"
+                      << "\nCommands: /compact, /stats, /tokens, /thinking, /queues, /clear-queues, /new, /branch, /exit\n"
                       << "=====================\n\n";
             continue;
         }
@@ -199,6 +228,17 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug) {
         if (prompt == "/thinking") {
             agent.cycle_thinking_level();
             std::cout << "Thinking level: " << thinking_level_to_string(agent.thinking_level()) << "\n";
+            continue;
+        }
+
+        if (prompt == "/queues") {
+            print_queue_state(agent);
+            continue;
+        }
+
+        if (prompt == "/clear-queues") {
+            agent.clear_all_queues();
+            std::cout << "[queues] cleared\n";
             continue;
         }
 
@@ -281,6 +321,28 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug) {
         agent.set_event_handler([&animation](const AgentEvent& ev) {
             if (ev.type == AgentEvent::Type::ModelCallStart) {
                 animation.resume_for_next_model_turn();
+                return;
+            }
+            if (ev.type == AgentEvent::Type::QueueUpdate) {
+                std::cout << "\n[queue] steering=" << ev.steering_messages.size()
+                          << ", follow-up=" << ev.follow_up_messages.size() << "\n";
+                return;
+            }
+            if (ev.type == AgentEvent::Type::AutoRetryStart) {
+                std::cout << "\n[retry #" << ev.retry_attempt << "/" << ev.retry_max_attempts
+                          << "] Waiting " << ev.retry_delay_ms << "ms...\n";
+                return;
+            }
+            if (ev.type == AgentEvent::Type::AutoRetryEnd) {
+                if (ev.retry_success) {
+                    std::cout << "\n[retry] Success after " << ev.retry_attempt << " attempts\n";
+                } else {
+                    std::cout << "\n[retry] Failed after " << ev.retry_attempt << " attempts";
+                    if (!ev.retry_final_error.empty()) {
+                        std::cout << ": " << ev.retry_final_error;
+                    }
+                    std::cout << "\n";
+                }
             }
         });
 

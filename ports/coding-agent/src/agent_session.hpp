@@ -394,6 +394,8 @@ class AgentSession {
 
     /// Access steering messages (for testing).
     const std::vector<std::string>& steering_messages() const { return steering_messages_; }
+    /// Access follow-up messages (for testing and interactive display).
+    const std::vector<std::string>& follow_up_messages() const { return follow_up_messages_; }
 
     // ====================================================================
     // Custom Messages

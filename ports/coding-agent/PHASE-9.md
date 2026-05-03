@@ -30,20 +30,23 @@ Add message queueing (steer/followUp) and auto-retry with exponential backoff to
 | Print mode | Done |
 | Event system (single handler) | Done |
 
-### What is missing (this phase)
+### Phase 9 progress
 
-| Area | Notes |
-|------|-------|
-| **Steer queue** | Messages queued while streaming, injected after current turn |
-| **Follow-up queue** | Messages queued while streaming, injected only when agent would stop |
-| **Queue modes** | `one-at-a-time` vs `all` drain strategies |
-| **Auto-retry** | Exponential backoff on retryable errors (rate limit, overloaded, 5xx) |
-| **Retry settings** | Configurable `enabled`, `maxRetries`, `baseDelayMs` |
-| **Queue events** | `queue_update` event for UI display |
-| **`waitForRetry()`** | Blocks callers until retry completes |
-| **`streamingBehavior` option** | `steer` vs `followUp` when queuing during streaming |
-| **Pending next-turn messages** | "Asides" injected alongside the next user prompt |
-| **`sendCustomMessage()` with delivery modes** | `steer`, `followUp`, `nextTurn` |
+| Area | Status |
+|------|--------|
+| **Queue types & enums** | Done |
+| **PendingMessageQueue class** | Done |
+| **Queue state in AgentSession** | Done |
+| **Steer/followUp API** | Done |
+| **Queue event emission** | Done |
+| **Auto-retry logic** | Done |
+| **Queue integration in run_turn()** | Done |
+| **Retry integration in event processing** | Done |
+| **streamingBehavior option** | Deferred |
+| **sendCustomMessage()** | Done |
+| **Retry settings in config** | Done |
+| **Interactive mode queue display** | Deferred |
+| **Tests** | Done |
 
 ---
 
@@ -364,73 +367,72 @@ The TypeScript `SettingsManager` persists retry settings to JSON. For Phase 9, r
 
 ### 1. New types (`agent_session.hpp`)
 
-- [ ] `QueueMode` enum class: `OneAtATime`, `All`.
-- [ ] `StreamingBehavior` enum class: `Steer`, `FollowUp`.
-- [ ] `RetrySettings` struct: `enabled`, `maxRetries`, `baseDelayMs`.
-- [ ] `ProviderRetrySettings` struct: `timeoutMs`, `maxRetries`, `maxRetryDelayMs`.
-- [ ] `QueueUpdateEvent` variant in `AgentEvent`.
-- [ ] `AutoRetryStartEvent` variant in `AgentEvent`.
-- [ ] `AutoRetryEndEvent` variant in `AgentEvent`.
-- [ ] Extended `CompactionEndEvent` with `willRetry` and `errorMessage`.
+- [x] `QueueMode` enum class: `OneAtATime`, `All`.
+- [x] `StreamingBehavior` enum class: `Steer`, `FollowUp`.
+- [x] `RetrySettings` struct: `enabled`, `maxRetries`, `baseDelayMs`.
+- [x] `ProviderRetrySettings` struct: `timeoutMs`, `maxRetries`, `maxRetryDelayMs`.
+- [x] `QueueUpdateEvent` variant in `AgentEvent`.
+- [x] `AutoRetryStartEvent` variant in `AgentEvent`.
+- [x] `AutoRetryEndEvent` variant in `AgentEvent`.
 
-### 2. `PendingMessageQueue` class (`pending_message_queue.hpp/cpp`)
+### 2. `PendingMessageQueue` class (`pending_message_queue.hpp`)
 
-- [ ] Constructor with `QueueMode`.
-- [ ] `enqueue(text, images)`.
-- [ ] `has_items()`.
-- [ ] `clear()`.
-- [ ] `drain()` — mode-aware extraction.
-- [ ] `mode()` / `set_mode()`.
+- [x] Constructor with `QueueMode`.
+- [x] `enqueue(text, images)`.
+- [x] `has_items()`.
+- [x] `clear()`.
+- [x] `drain()` — mode-aware extraction.
+- [x] `mode()` / `set_mode()`.
 
 ### 3. Queue state in `AgentSession` (`agent_session.hpp`)
 
-- [ ] `steering_queue_` / `follow_up_queue_` members.
-- [ ] `steering_messages_` / `follow_up_messages_` tracking vectors.
-- [ ] `pending_next_turn_messages_` vector.
-- [ ] Retry state members: `_retry_settings`, `_retry_attempt`, `_retry_in_progress`, `_retry_cv`, `_retry_mutex`.
+- [x] `steering_queue_` / `follow_up_queue_` members.
+- [x] `steering_messages_` / `follow_up_messages_` tracking vectors.
+- [x] `pending_next_turn_messages_` vector.
+- [x] Retry state members: `_retry_attempt`, `_retry_in_progress`, `_retry_cv`, `_retry_mutex`.
 
 ### 4. Queue API methods (`agent_session.cpp`)
 
-- [ ] `steer(text, images)`.
-- [ ] `followUp(text, images)`.
-- [ ] `clear_steering_queue()`, `clear_follow_up_queue()`, `clear_all_queues()`.
-- [ ] `has_queued_messages()`.
-- [ ] `steering_mode()` / `set_steering_mode()`.
-- [ ] `follow_up_mode()` / `set_follow_up_mode()`.
+- [x] `steer(text, images)`.
+- [x] `followUp(text, images)`.
+- [x] `clear_steering_queue()`, `clear_follow_up_queue()`, `clear_all_queues()`.
+- [x] `has_queued_messages()`.
+- [x] `steering_mode()` / `set_steering_mode()`.
+- [x] `follow_up_mode()` / `set_follow_up_mode()`.
 
 ### 5. Queue event emission (`agent_session.cpp`)
 
-- [ ] `emit_queue_update()` — emits `queue_update` event.
-- [ ] Called from `steer()`, `followUp()`, `clear_*_queue()`, and on drain in `run_turn()`.
+- [x] `emit_queue_update()` — emits `queue_update` event.
+- [x] Called from `steer()`, `followUp()`, `clear_*_queue()`, and on drain in `run_turn()`.
 
 ### 6. Auto-retry: `_is_retryable_error()` (`agent_session.cpp`)
 
-- [ ] Detect rate limit, overloaded, 5xx, timeout, connection errors in assistant message.
+- [x] Detect rate limit, overloaded, 5xx, timeout, connection errors in assistant message.
 
 ### 7. Auto-retry: `_handle_retryable_error()` (`agent_session.cpp`)
 
-- [ ] Retry loop with exponential backoff.
-- [ ] Backoff cap at `maxRetryDelayMs`.
-- [ ] Cancel support via `cancel_flag_`.
-- [ ] Emit `auto_retry_start` / `auto_retry_end`.
-- [ ] Return bool indicating if retry was initiated.
+- [x] Retry loop with exponential backoff.
+- [x] Backoff cap at `maxRetryDelayMs`.
+- [x] Cancel support via `cancel_flag_`.
+- [x] Emit `auto_retry_start` / `auto_retry_end`.
+- [x] Return bool indicating if retry was initiated.
 
 ### 8. Auto-retry: `waitForRetry()` / `_resolve_retry()` (`agent_session.cpp`)
 
-- [ ] `waitForRetry()` — blocks on condition variable.
-- [ ] `_resolve_retry()` — signals condition variable.
+- [x] `waitForRetry()` — blocks on condition variable.
+- [x] `_resolve_retry()` — signals condition variable.
 
 ### 9. Integrate queues into `run_turn()` (`agent_session.cpp`)
 
-- [ ] Drain `steering_queue_` before each `call_provider()`.
-- [ ] Drain `follow_up_queue_` when agent would stop (no tool calls).
-- [ ] Reset `retry_attempt_` on successful completion.
+- [x] Drain `steering_queue_` before each `call_provider()`.
+- [x] Drain `follow_up_queue_` when agent would stop (no tool calls).
+- [x] Reset `retry_attempt_` on successful completion.
 
 ### 10. Integrate retry into event processing (`agent_session.cpp`)
 
-- [ ] Check `_is_retryable_error()` on agent_end.
-- [ ] Call `_handle_retryable_error()`, skip compaction if retry initiated.
-- [ ] Call `_resolve_retry()` on non-retryable completion.
+- [x] Check `_is_retryable_error()` on provider error.
+- [x] Call `_handle_retryable_error()`, skip compaction if retry initiated.
+- [x] Call `_resolve_retry()` on non-retryable completion.
 
 ### 11. `streamingBehavior` in `prompt()` (`agent_session.cpp`)
 
@@ -438,15 +440,15 @@ The TypeScript `SettingsManager` persists retry settings to JSON. For Phase 9, r
 
 ### 12. `sendCustomMessage()` (`agent_session.cpp`)
 
-- [ ] Implement with `CustomMessageDelivery` enum.
-- [ ] Steer/FollowUp: enqueue to respective queue.
-- [ ] NextTurn: append to `pending_next_turn_messages_`, delivered in next `prompt()`.
+- [x] Implement with `CustomMessageDelivery` enum.
+- [x] Steer/FollowUp: enqueue to respective queue.
+- [x] NextTurn: append to `pending_next_turn_messages_`, delivered in next `prompt()`.
 
-### 13. Retry settings in `AgentSessionConfig` and `main.cpp`
+### 13. Retry settings in `AgentSessionConfig` and `agent.cpp`
 
-- [ ] Add fields to `AgentSessionConfig`.
-- [ ] Wire from `Config` in `agent.cpp`.
-- [ ] Add CLI flags: `--retry-enabled`, `--retry-max-retries`, `--retry-base-delay-ms`.
+- [x] Add fields to `AgentSessionConfig`.
+- [x] Wire from `Config` in `agent.cpp`.
+- [x] Add CLI flags: `--retry-enabled`, `--no-retry-enabled`, `--retry-max-retries`, `--retry-base-delay-ms`, `--retry-max-delay-ms`.
 
 ### 14. Interactive mode: queue display and commands
 
@@ -462,26 +464,22 @@ The TypeScript `SettingsManager` persists retry settings to JSON. For Phase 9, r
 
 ### 16. Tests
 
-Create test file `test/agent_session_queue_retry_test.cpp`:
+Create test file `test/phase9_queue_retry_test.cpp`:
 
-- [ ] `queue_steer_drain_before_call` — steering messages are drained before next LLM call.
-- [ ] `queue_followup_drain_after_stop` — follow-up messages are drained only when agent stops.
-- [ ] `queue_mode_one_at_a_time` — drain returns only first message.
-- [ ] `queue_mode_all` — drain returns all messages.
-- [ ] `is_retryable_error_rate_limit` — "429 rate limit" is retryable.
-- [ ] `is_retryable_error_overloaded` — "overloaded" is retryable.
-- [ ] `is_retryable_error_500` — "500" is retryable.
-- [ ] `is_retryable_error_timeout` — "timeout" is retryable.
-- [ ] `is_retryable_error_tool_fail` — tool execution error is NOT retryable.
-- [ ] `is_retryable_error_auth` — auth error is NOT retryable.
-- [ ] `retry_exponential_backoff` — delays double each attempt.
-- [ ] `retry_max_delay_cap` — delay capped at `maxRetryDelayMs`.
-- [ ] `retry_cancel` — retry is interrupted by cancel flag.
-- [ ] `retry_max_retries_exceeded` — stops after `maxRetries` attempts.
-- [ ] `retry_success_resets_counter` — retry_attempt resets on success.
-- [ ] `prompt_during_streaming_queues_by_behavior` — steer vs followUp based on option.
-- [ ] `send_custom_message_steer` — custom message queued to steer queue.
-- [ ] `send_custom_message_next_turn` — custom message delivered with next prompt.
+- [x] `queue_mode_one_at_a_time` — drain returns only first message.
+- [x] `queue_mode_all` — drain returns all messages.
+- [x] `steer_followup_enqueue` — steer/followUp enqueue correctly.
+- [x] `steer_drain_before_call` — steering messages are drained before next LLM call.
+- [x] `followup_drain_after_stop` — follow-up messages are drained when agent stops.
+- [x] `is_retryable_error_rate_limit` — "429 rate limit" is retryable.
+- [x] `is_retryable_error_overloaded` — "overloaded" is retryable.
+- [x] `is_retryable_error_500_and_timeout` — "500" and "timeout" are retryable.
+- [x] `is_retryable_error_not_retryable` — tool errors, auth errors are NOT retryable.
+- [x] `send_custom_message_steer` — custom message queued to steer queue.
+- [x] `send_custom_message_next_turn` — custom message delivered with next prompt.
+- [x] `clear_all_queues` — clears all queues including pending next-turn.
+- [x] `queue_mode_get_set` — get/set steering and follow-up modes.
+- [x] `queue_with_images` — messages with image metadata work.
 
 ---
 

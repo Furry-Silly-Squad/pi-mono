@@ -112,6 +112,11 @@ void print_usage() {
       << "  --interactive-debug       Print turn diagnostics after each reply (default: on)\n"
       << "  --no-interactive-debug    Disable turn diagnostics in interactive mode\n"
       << "  --max-empty-nudges <n>   When the model returns no text and no tools, nudge and retry (default: 2, 0=off)\n"
+      << "  --retry-enabled          Enable auto-retry for transient LLM errors (default: on)\n"
+      << "  --no-retry-enabled       Disable auto-retry for transient LLM errors\n"
+      << "  --retry-max-retries <n>  Max retry attempts for transient errors (default: 3)\n"
+      << "  --retry-base-delay-ms <ms> Base delay for exponential backoff in ms (default: 1000)\n"
+      << "  --retry-max-delay-ms <ms>  Maximum backoff delay in ms (default: 60000)\n"
       << "  --prompt <text>           Prompt text to send\n"
       << "  --help                    Show this help\n"
       << "\n"
@@ -154,6 +159,11 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .initial_active_tools = "read,bash,edit,write",
       .interactive_debug = true,
       .max_empty_completion_nudges = 2,
+      .retry_enabled = true,
+      .retry_max_retries = 3,
+      .retry_base_delay_ms = 1000,
+      .retry_max_retry_delay_ms = 60000,
+      .retry_timeout_ms = 30000,
   };
 
   if (const auto settings = load_settings_json(); settings.has_value()) {
@@ -169,6 +179,11 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     load_optional(settings.value(), "initial_active_tools", config.initial_active_tools);
     load_optional(settings.value(), "interactive_debug", config.interactive_debug);
     load_optional(settings.value(), "max_empty_completion_nudges", config.max_empty_completion_nudges);
+    load_optional(settings.value(), "retry_enabled", config.retry_enabled);
+    load_optional(settings.value(), "retry_max_retries", config.retry_max_retries);
+    load_optional(settings.value(), "retry_base_delay_ms", config.retry_base_delay_ms);
+    load_optional(settings.value(), "retry_max_retry_delay_ms", config.retry_max_retry_delay_ms);
+    load_optional(settings.value(), "retry_timeout_ms", config.retry_timeout_ms);
   }
 
   if (const char* nudge_env = std::getenv("CODING_AGENT_MAX_EMPTY_NUDGES"); nudge_env != nullptr) {
@@ -338,6 +353,35 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     if (arg == "--max-empty-nudges" && i + 1 < argc) {
       if (!parse_int_arg(argv[++i], config.max_empty_completion_nudges)) {
         error = "Invalid value for --max-empty-nudges";
+        return std::nullopt;
+      }
+      continue;
+    }
+    if (arg == "--retry-enabled") {
+      config.retry_enabled = true;
+      continue;
+    }
+    if (arg == "--no-retry-enabled") {
+      config.retry_enabled = false;
+      continue;
+    }
+    if (arg == "--retry-max-retries" && i + 1 < argc) {
+      if (!parse_int_arg(argv[++i], config.retry_max_retries)) {
+        error = "Invalid value for --retry-max-retries";
+        return std::nullopt;
+      }
+      continue;
+    }
+    if (arg == "--retry-base-delay-ms" && i + 1 < argc) {
+      if (!parse_int_arg(argv[++i], config.retry_base_delay_ms)) {
+        error = "Invalid value for --retry-base-delay-ms";
+        return std::nullopt;
+      }
+      continue;
+    }
+    if (arg == "--retry-max-delay-ms" && i + 1 < argc) {
+      if (!parse_int_arg(argv[++i], config.retry_max_retry_delay_ms)) {
+        error = "Invalid value for --retry-max-delay-ms";
         return std::nullopt;
       }
       continue;

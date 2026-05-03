@@ -378,6 +378,17 @@ class AgentSession {
     /// Wait for any in-progress retry to complete.
     void waitForRetry();
 
+    /// Check if an error message is retryable (for testing).
+    bool is_retryable_error(const std::string& error_text) const;
+
+    /// Access pending next-turn messages (for testing).
+    const std::vector<std::string>& pending_next_turn_messages() const {
+        return pending_next_turn_messages_;
+    }
+
+    /// Access steering messages (for testing).
+    const std::vector<std::string>& steering_messages() const { return steering_messages_; }
+
     // ====================================================================
     // Custom Messages
     // ====================================================================
@@ -488,7 +499,6 @@ class AgentSession {
     // Retry Helpers
     // ====================================================================
 
-    bool is_retryable_error(const std::string& error_text) const;
     bool handle_retryable_error(const ChunkCallback& on_chunk,
                                 std::atomic<bool>* cancel_flag);
     void resolve_retry();

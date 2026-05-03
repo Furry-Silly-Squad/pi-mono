@@ -524,6 +524,17 @@ bool AgentSession::run_turn(const std::string& user_input,
     user.entry_id = session_->appendMessage(user);
     messages_.push_back(user);
 
+    // Deliver pending next-turn messages (asides) alongside the user prompt.
+    for (const auto& aside : pending_next_turn_messages_) {
+        ChatMessage aside_msg{
+            .role    = "user",
+            .content = aside,
+        };
+        aside_msg.entry_id = session_->appendMessage(aside_msg);
+        messages_.push_back(aside_msg);
+    }
+    pending_next_turn_messages_.clear();
+
     AgentEvent ts_ev{};
     ts_ev.type        = AgentEvent::Type::TurnStart;
     ts_ev.turn_index  = turn_index_;
@@ -538,6 +549,19 @@ bool AgentSession::run_turn(const std::string& user_input,
         AgentEvent mc_ev{};
         mc_ev.type = AgentEvent::Type::ModelCallStart;
         emit_event(mc_ev.type, mc_ev);
+
+        // Drain steering queue before each LLM call.
+        auto steering_msgs = steering_queue_.drain();
+        for (const auto& [text, images] : steering_msgs) {
+            (void)images;
+            ChatMessage steer_msg{
+                .role    = "user",
+                .content = text,
+            };
+            steer_msg.entry_id = session_->appendMessage(steer_msg);
+            messages_.push_back(steer_msg);
+        }
+        emit_queue_update();
 
         ChatResponse response;
         std::string error;
@@ -554,6 +578,11 @@ bool AgentSession::run_turn(const std::string& user_input,
             err_ev.error_message = error;
             emit_event(err_ev.type, err_ev);
             finalize_turn_debug(model_rounds, false, "error", error, empty_completion_nudges);
+
+            // Check for retryable error
+            if (handle_retryable_error(on_chunk, cancel_flag)) {
+                return true;  // Retry initiated, skip compaction
+            }
             return false;
         }
 
@@ -588,7 +617,26 @@ bool AgentSession::run_turn(const std::string& user_input,
         check_and_compact(on_chunk);
 
         if (response.tool_calls.empty()) {
-            if (!is_whitespace_or_empty_content(response.content)) break;
+            if (!is_whitespace_or_empty_content(response.content)) {
+                // Agent stopped with content. Check follow-up queue before ending.
+                auto followup_msgs = follow_up_queue_.drain();
+                if (!followup_msgs.empty()) {
+                    for (const auto& [text, images] : followup_msgs) {
+                        (void)images;
+                        ChatMessage fu_msg{
+                            .role    = "user",
+                            .content = text,
+                        };
+                        fu_msg.entry_id = session_->appendMessage(fu_msg);
+                        messages_.push_back(fu_msg);
+                    }
+                    emit_queue_update();
+                    on_chunk("\n[queued follow-up message; continuing turn…]\n");
+                    continue;  // Continue the turn with follow-up messages
+                }
+                break;  // No follow-up, turn ends
+            }
+            // Empty content: nudge or check follow-up
             if (config_.max_empty_completion_nudges > 0 &&
                 empty_completion_nudges < config_.max_empty_completion_nudges) {
                 ++empty_completion_nudges;
@@ -601,7 +649,24 @@ bool AgentSession::run_turn(const std::string& user_input,
                 on_chunk("\n[empty assistant message; retrying with nudge…]\n");
                 continue;
             }
-            break;
+
+            // Agent would stop. Check follow-up queue.
+            auto followup_msgs = follow_up_queue_.drain();
+            if (!followup_msgs.empty()) {
+                for (const auto& [text, images] : followup_msgs) {
+                    (void)images;
+                    ChatMessage fu_msg{
+                        .role    = "user",
+                        .content = text,
+                    };
+                    fu_msg.entry_id = session_->appendMessage(fu_msg);
+                    messages_.push_back(fu_msg);
+                }
+                emit_queue_update();
+                on_chunk("\n[queued follow-up message; continuing turn…]\n");
+                continue;  // Continue the turn with follow-up messages
+            }
+            break;  // No more messages, turn ends
         }
 
         execute_tools(response.tool_calls, on_chunk);
@@ -615,6 +680,18 @@ bool AgentSession::run_turn(const std::string& user_input,
     te_ev.type       = AgentEvent::Type::TurnEnd;
     te_ev.turn_index = turn_index_ - 1;
     emit_event(te_ev.type, te_ev);
+
+    // Reset retry state on successful completion.
+    if (retry_attempt_ > 0) {
+        AgentEvent end_ev{};
+        end_ev.type = AgentEvent::Type::AutoRetryEnd;
+        end_ev.retry_success = true;
+        end_ev.retry_attempt = retry_attempt_;
+        emit_event(end_ev.type, end_ev);
+        on_chunk("[retry] Success after " + std::to_string(retry_attempt_) + " attempts\n");
+        retry_attempt_ = 0;
+        resolve_retry();
+    }
 
     finalize_turn_debug(model_rounds, hit_max_tool_iterations, "", "", empty_completion_nudges);
     return true;
@@ -888,6 +965,11 @@ void AgentSession::sendCustomMessage(const std::string& custom_type,
 }
 
 void AgentSession::emit_queue_update() {
+    // Only emit if either queue actually has items.
+    if (!steering_queue_.has_items() && !follow_up_queue_.has_items()) {
+        return;
+    }
+
     AgentEvent ev{};
     ev.type = AgentEvent::Type::QueueUpdate;
 

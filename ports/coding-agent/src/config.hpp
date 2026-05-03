@@ -36,6 +36,12 @@ struct Config {
   bool interactive_debug = true;
   /// When the model ends with no tools and empty text, append a nudge user message and retry (0 = off).
   int max_empty_completion_nudges = 2;
+  /// Retry settings for transient LLM errors.
+  bool retry_enabled = true;
+  int retry_max_retries = 3;
+  int retry_base_delay_ms = 1000;
+  int retry_max_retry_delay_ms = 60000;
+  int retry_timeout_ms = 30000;
 };
 
 std::optional<Config> parse_config(int argc, char** argv, std::string& error);

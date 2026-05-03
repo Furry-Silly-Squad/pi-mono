@@ -50,6 +50,11 @@ AgentSessionConfig make_session_config(const Config& c) {
     cfg.initial_active_tools       = c.initial_active_tools;
     cfg.interactive_debug          = c.interactive_debug;
     cfg.max_empty_completion_nudges = c.max_empty_completion_nudges;
+    cfg.retry_enabled              = c.retry_enabled;
+    cfg.retry_max_retries          = c.retry_max_retries;
+    cfg.retry_base_delay_ms        = c.retry_base_delay_ms;
+    cfg.retry_max_retry_delay_ms   = c.retry_max_retry_delay_ms;
+    cfg.retry_timeout_ms           = c.retry_timeout_ms;
     return cfg;
 }
 

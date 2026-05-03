@@ -126,3 +126,10 @@ add_test(NAME coding-agent-session-store COMMAND coding-agent-session-store-test
 add_test(NAME coding-agent-branch-traversal COMMAND coding-agent-branch-traversal-test)
 add_test(NAME coding-agent-compaction-carry-forward COMMAND coding-agent-compaction-carry-forward-test)
 add_test(NAME coding-agent-agent-session COMMAND coding-agent-agent-session-test)
+
+# Phase 9 queue/retry tests
+add_executable(coding-agent-phase9-test test/phase9_queue_retry_test.cpp src/agent_session.cpp src/compaction.cpp src/context_loader.cpp src/file_ops.cpp src/session_entry.cpp src/system_prompt.cpp src/tools/tool_registry.cpp src/tools/bash_tool.cpp src/tools/edit_tool.cpp src/tools/find_tool.cpp src/tools/grep_tool.cpp src/tools/ls_tool.cpp src/tools/read_tool.cpp src/tools/write_tool.cpp)
+target_include_directories(coding-agent-phase9-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-phase9-test PRIVATE nlohmann_json::nlohmann_json)
+
+add_test(NAME coding-agent-phase9 COMMAND coding-agent-phase9-test)

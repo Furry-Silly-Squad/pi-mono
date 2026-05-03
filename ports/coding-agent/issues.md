@@ -82,15 +82,15 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 ---
 
-### 11. `LlamaCppProvider::chat()` non-stream fallback can stack on recursive retry
+### 11. `LlamaCppProvider::chat()` non-stream fallback recursion depth (RESOLVED)
 
-**Severity: Low** — each invalid streamed tool call triggers a recursive `chat()` call, which itself can trigger another fallback.
+**Severity: Was Low** — theoretical recursion concern.
 
-**Location:** `llama_cpp_provider.cpp` — end of streaming block
+**Location:** `llama_cpp_provider.cpp` — streaming tool-call fallback
 
-**What happens:** When streamed tool-call arguments are invalid JSON, the provider calls `chat(retry_request, ...)` with `stream = false`. If that non-stream retry also fails, the error propagates up. However, if the non-stream response also produces invalid tool calls (unlikely but possible), it could recurse. The current code doesn't guard against this depth.
+**What happened:** When streamed tool-call arguments are invalid JSON, the provider calls `chat(retry_request, ...)` with `stream = false`. It was initially unclear whether the non-stream path could also trigger a recursive fallback.
 
-**Fix:** Add a `bool is_fallback` parameter or counter to prevent infinite recursion, or simply document that the fallback is single-level and accept the risk (the non-stream response is much less likely to have truncated tool calls).
+**Status: Resolved by code structure.** The non-stream path calls `parse_tool_calls()` which validates JSON via `is_valid_json_value()` and returns `false` on invalid arguments. It does NOT have a recursive fallback to stream mode. The recursion is at most one level deep (stream → non-stream only). No additional guard is needed.
 
 ---
 
@@ -98,26 +98,56 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 **Severity: Low** — concurrent access to the same session file (e.g. two terminal sessions in the same project) can corrupt the file.
 
-**Location:** `session_entry.cpp` — `_persist()`, `_rewriteFile()`
+**Location:** `session_entry.cpp` — `_persist()`, `_rewriteFile()`, `forkFrom()`
 
-**What happens:** Multiple `coding-agent` processes appending to the same `.jsonl` file can interleave writes.
+**What happens:** Multiple `coding-agent` processes appending to the same `.jsonl` file can interleave writes. `SessionManager::forkFrom()` reads source files without any locking.
 
 **Fix:** Use `flock()` or `fcntl()` for advisory locking on write. Or accept the limitation and document it (the TS port has the same limitation).
 
 ---
 
-### 13. `handle_retryable_error` does not re-send the original user prompt on retry
+### 13. `handle_retryable_error` retry UX parity (RESOLVED)
 
-**Severity: Low** — on retry, the provider receives the full message history including the user prompt, but the agent session does not re-emit the user-visible output for the original request. This means the user sees retry chatter but the conversation semantics may be slightly off compared to the TS reference.
+**Severity: Was Low** — parity observation.
 
 **Location:** `agent_session.cpp` — `handle_retryable_error()`
 
-**What happens:** On retry success, the assistant message is appended to `messages_` and the agent continues. The TS reference may handle this differently (e.g., by clearing the failed assistant message and re-sending). Verify parity with the TS implementation's retry behavior.
+**What happened:** On retry, the provider receives the full message history including the user prompt, and the agent session does not "re-emit" the user-visible output for the original request.
+
+**Status: Resolved / Not a bug.** `handle_retryable_error()` sends the full `messages_` history on retry, which includes the original user prompt and the failed assistant message. This is correct behavior and matches the TypeScript reference implementation. The user prompt is never removed on failure. The retry result is appended to `messages_` and the agent continues normally.
+
+---
+
+### 14. `abort_requested_` never checked in the run loop
+
+**Severity: Low–Medium** — user abort may not stop tool execution mid-turn.
+
+**Location:** `agent_session.cpp` — `AgentSession::abort()`, `AgentSession::run_turn()`
+
+**What happens:** `abort()` sets `abort_requested_ = true` and calls `provider_.cancel()`. The provider cancellation stops the in-flight HTTP request. However, `abort_requested_` is never checked in `run_turn()` between tool iterations or during `execute_tools()`. If the user aborts during a long-running bash command or between tool calls, the tool continues executing and the loop proceeds to the next iteration until the provider is called again (at which point the provider-level cancel takes effect).
+
+**Fix directions:**
+- Add `abort_requested_.load()` checks in the run loop between iterations and in `execute_tools()`.
+- Consider propagating the abort state to tools (e.g., a `std::atomic<bool>*` abort flag passed to `ToolRegistry::dispatch()`).
+- Or: document that abort only stops the next LLM call, not in-flight tools.
+
+---
+
+### 15. `SessionManager::forkFrom()` reads source without locking
+
+**Severity: Low** — concurrent fork on the same source file.
+
+**Location:** `session_entry.cpp` — `SessionManager::forkFrom()`
+
+**What happens:** `forkFrom()` calls `loadEntriesFromFile(sourcePath)` which opens and reads the source `.jsonl` file without any file locking. If another process is simultaneously writing to the source file, the read may see a partial line or corrupted JSON.
+
+**Fix:** Use `flock()` or `fcntl()` for shared locking on the source file read, or accept the limitation and document it.
 
 ---
 
 ## Summary
 
-- **Fixed in recent commits:** Issues 1-5 (earlier), plus 6 (`getentropy` / urandom / `random_device` seed chain), 7 (removed `Conversation`), 8 (edit write checks).
-- **Still open:** cancel pointer lifetime vs threading (9), deferred persist / threading docs (10), non-stream fallback depth (11), session file locking (12), retry UX parity (13).
-- **Priority:** Issue 9 next if cross-thread cancel matters; otherwise 10-13 are documentation or edge cases.
+- **Fixed in recent commits:** Issues 1-8.
+- **Resolved by code structure (no fix needed):** Issues 11 (non-stream fallback recursion), 13 (retry UX parity).
+- **Still open:** cancel pointer lifetime vs threading (9), deferred persist / threading docs (10), session file locking (12), abort loop check (14), fork file locking (15).
+- **Priority:** Issue 9 next if cross-thread cancel matters; Issue 14 if clean abort behavior is needed; Issues 10, 12, 15 are documentation or edge cases.

@@ -32,6 +32,8 @@ struct Config {
   bool branch_summary;
   /// Comma-separated tool names exposed to the model (must match registered tools).
   std::string initial_active_tools;
+  /// After each interactive prompt, print turn diagnostics (tail of assistant text, rounds, etc.).
+  bool interactive_debug = true;
 };
 
 std::optional<Config> parse_config(int argc, char** argv, std::string& error);

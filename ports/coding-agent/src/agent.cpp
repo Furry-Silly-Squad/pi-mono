@@ -48,6 +48,7 @@ AgentSessionConfig make_session_config(const Config& c) {
     cfg.compaction_fail_fast       = c.compaction_fail_fast;
     cfg.auto_compaction            = true;
     cfg.initial_active_tools       = c.initial_active_tools;
+    cfg.interactive_debug          = c.interactive_debug;
     return cfg;
 }
 
@@ -155,7 +156,7 @@ int run_agent(int argc, char** argv) {
     if (should_run_print_mode(config.value())) {
         return run_print_mode(agent, config->prompt.value_or(""));
     }
-    return run_interactive_mode(agent);
+    return run_interactive_mode(agent, config->interactive_debug);
 }
 
 }  // namespace coding_agent

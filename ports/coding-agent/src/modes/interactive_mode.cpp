@@ -54,9 +54,35 @@ bool near_compaction_threshold(const AgentSession& agent) {
     return (budget - total) < (budget / 10);
 }
 
+void print_interactive_turn_debug(const AgentSession& agent) {
+    const TurnDebugInfo& d = agent.last_turn_debug();
+    const auto& cfg       = agent.session_config();
+    std::cout << "--- turn debug ---\n";
+    std::cout << "model_rounds: " << d.model_rounds << "\n";
+    std::cout << "max_tool_iterations (config): " << cfg.max_tool_iterations << "\n";
+    std::cout << "hit_max_tool_iterations: " << (d.hit_max_tool_iterations ? "yes" : "no") << "\n";
+    if (!d.trailing_message_role.empty()) {
+        std::cout << "trailing_message_role: " << d.trailing_message_role << "\n";
+    }
+    std::cout << "final_assistant_chars: " << d.final_assistant_content_chars << "\n";
+    std::cout << "final_assistant_tool_calls: " << d.final_assistant_tool_call_count << "\n";
+    if (d.final_assistant_content_chars > 0) {
+        std::cout << "assistant_tail_last_~20_tokens: " << d.final_assistant_tail_esc << "\n";
+    } else if (d.model_rounds > 0) {
+        std::cout << "assistant_tail_last_~20_tokens: (empty assistant content)\n";
+    }
+    if (!d.run_failure_kind.empty()) {
+        std::cout << "run_failure_kind: " << d.run_failure_kind << "\n";
+        if (!d.provider_error.empty()) {
+            std::cout << "provider_error: " << d.provider_error << "\n";
+        }
+    }
+    std::cout << "---\n";
+}
+
 }  // namespace
 
-int run_interactive_mode(AgentSession& agent) {
+int run_interactive_mode(AgentSession& agent, bool interactive_debug) {
     struct sigaction sa{};
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
@@ -259,6 +285,10 @@ int run_interactive_mode(AgentSession& agent) {
             }
         } else {
             std::cout << "\n[done]\n";
+        }
+
+        if (interactive_debug) {
+            print_interactive_turn_debug(agent);
         }
 
         std::cout << format_token_budget(agent) << "\n";

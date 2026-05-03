@@ -71,6 +71,35 @@ std::string describe_tool_call(const std::string& tool_name, const std::string& 
     return tool_name;
 }
 
+/// Match `approx_tokens` (4 chars per token): show tail of the last N token-equivalents.
+constexpr int kDebugTailApproxTokens = 20;
+
+std::string escape_debug_text(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if (c == '\n') {
+            out += "\\n";
+        } else if (c == '\r') {
+            out += "\\r";
+        } else if (c == '\t') {
+            out += "\\t";
+        } else {
+            out += static_cast<char>(c);
+        }
+    }
+    return out;
+}
+
+std::string assistant_tail_for_debug(const std::string& content) {
+    const int max_chars = std::max(1, kDebugTailApproxTokens * 4);
+    if (content.size() <= static_cast<size_t>(max_chars)) {
+        return escape_debug_text(content);
+    }
+    return std::string("...") +
+           escape_debug_text(content.substr(content.size() - static_cast<size_t>(max_chars)));
+}
+
 }  // namespace
 
 // ============================================================================
@@ -437,6 +466,32 @@ int         AgentSession::total_context_tokens()  const {
     return ::coding_agent::total_context_tokens(messages_);
 }
 
+const TurnDebugInfo& AgentSession::last_turn_debug() const { return last_turn_debug_; }
+
+void AgentSession::finalize_turn_debug(int model_rounds,
+                                       bool hit_max_tool_iterations,
+                                       const std::string& failure_kind,
+                                       const std::string& provider_err) {
+    last_turn_debug_                 = TurnDebugInfo{};
+    last_turn_debug_.model_rounds    = model_rounds;
+    last_turn_debug_.hit_max_tool_iterations = hit_max_tool_iterations;
+    last_turn_debug_.run_failure_kind      = failure_kind;
+    last_turn_debug_.provider_error        = provider_err;
+
+    for (auto it = messages_.rbegin(); it != messages_.rend(); ++it) {
+        if (it->role == "assistant") {
+            last_turn_debug_.final_assistant_content_chars =
+                static_cast<int>(it->content.size());
+            last_turn_debug_.final_assistant_tool_call_count = it->tool_calls.size();
+            last_turn_debug_.final_assistant_tail_esc        = assistant_tail_for_debug(it->content);
+            break;
+        }
+    }
+    if (!messages_.empty()) {
+        last_turn_debug_.trailing_message_role = messages_.back().role;
+    }
+}
+
 // ============================================================================
 // Internal: run_turn
 // ============================================================================
@@ -456,6 +511,9 @@ bool AgentSession::run_turn(const std::string& user_input,
     ts_ev.turn_index  = turn_index_;
     emit_event(ts_ev.type, ts_ev);
 
+    int model_rounds               = 0;
+    bool hit_max_tool_iterations   = false;
+
     for (int iter = 0; iter < config_.max_tool_iterations; ++iter) {
         // Signal before each model call (drives between-tool animation resume).
         AgentEvent mc_ev{};
@@ -469,14 +527,18 @@ bool AgentSession::run_turn(const std::string& user_input,
                 if (!messages_.empty() && messages_.back().role == "user") {
                     messages_.pop_back();
                 }
+                finalize_turn_debug(model_rounds, false, "interrupted", "");
                 return false;
             }
             AgentEvent err_ev{};
             err_ev.type          = AgentEvent::Type::Error;
             err_ev.error_message = error;
             emit_event(err_ev.type, err_ev);
+            finalize_turn_debug(model_rounds, false, "error", error);
             return false;
         }
+
+        ++model_rounds;
 
         ChatMessage assistant{
             .role         = "assistant",
@@ -509,6 +571,9 @@ bool AgentSession::run_turn(const std::string& user_input,
         if (response.tool_calls.empty()) break;
 
         execute_tools(response.tool_calls, on_chunk);
+        if (iter == config_.max_tool_iterations - 1) {
+            hit_max_tool_iterations = true;
+        }
     }
 
     ++turn_index_;
@@ -517,6 +582,7 @@ bool AgentSession::run_turn(const std::string& user_input,
     te_ev.turn_index = turn_index_ - 1;
     emit_event(te_ev.type, te_ev);
 
+    finalize_turn_debug(model_rounds, hit_max_tool_iterations, "", "");
     return true;
 }
 

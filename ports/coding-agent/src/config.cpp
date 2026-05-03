@@ -109,6 +109,8 @@ void print_usage() {
       << "                            Skip compaction on failure instead of aborting\n"
       << "  --no-branch-summary       Skip branch summarization when starting a new session or switching sessions\n"
       << "  --active-tools <csv>      Comma-separated tool names for the model (default: read,bash,edit,write)\n"
+      << "  --interactive-debug       Print turn diagnostics after each reply (default: on)\n"
+      << "  --no-interactive-debug    Disable turn diagnostics in interactive mode\n"
       << "  --prompt <text>           Prompt text to send\n"
       << "  --help                    Show this help\n"
       << "\n"
@@ -118,6 +120,7 @@ void print_usage() {
       << "  CODING_AGENT_MODEL\n"
       << "  CODING_AGENT_API_KEY\n"
       << "  CODING_AGENT_MAX_TOOL_ITERATIONS\n"
+      << "  CODING_AGENT_INTERACTIVE_DEBUG   1/0 — turn diagnostics in interactive mode\n"
       << "Settings file:\n"
       << "  ~/.config/coding-agent/settings.json\n";
 }
@@ -147,6 +150,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .compaction_fail_fast = true,
       .branch_summary = true,
       .initial_active_tools = "read,bash,edit,write",
+      .interactive_debug = true,
   };
 
   if (const auto settings = load_settings_json(); settings.has_value()) {
@@ -160,6 +164,16 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     load_optional(settings.value(), "compaction_keep_recent_tokens", config.compaction_keep_recent_tokens);
     load_optional(settings.value(), "compaction_fail_fast", config.compaction_fail_fast);
     load_optional(settings.value(), "initial_active_tools", config.initial_active_tools);
+    load_optional(settings.value(), "interactive_debug", config.interactive_debug);
+  }
+
+  if (const char* idebug = std::getenv("CODING_AGENT_INTERACTIVE_DEBUG"); idebug != nullptr) {
+    const std::string v(idebug);
+    if (v == "0" || v == "false" || v == "no" || v == "off") {
+      config.interactive_debug = false;
+    } else if (v == "1" || v == "true" || v == "yes" || v == "on") {
+      config.interactive_debug = true;
+    }
   }
 
   config.provider = get_env_or_default("CODING_AGENT_PROVIDER", config.provider);
@@ -294,6 +308,14 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     }
     if (arg == "--active-tools" && i + 1 < argc) {
       config.initial_active_tools = argv[++i];
+      continue;
+    }
+    if (arg == "--interactive-debug") {
+      config.interactive_debug = true;
+      continue;
+    }
+    if (arg == "--no-interactive-debug") {
+      config.interactive_debug = false;
       continue;
     }
     if (arg == "--prompt" && i + 1 < argc) {

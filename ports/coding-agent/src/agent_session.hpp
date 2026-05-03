@@ -88,6 +88,26 @@ struct AgentEvent {
 using AgentEventHandler = std::function<void(const AgentEvent&)>;
 
 // ============================================================================
+// Turn diagnostics (interactive / debugging)
+// ============================================================================
+
+/// Snapshot from the last `run()` attempt: model rounds, truncation hints, last assistant tail.
+struct TurnDebugInfo {
+    int model_rounds = 0;
+    bool hit_max_tool_iterations = false;
+    int final_assistant_content_chars = 0;
+    size_t final_assistant_tool_call_count = 0;
+    /// Last ~20 token-equivalents of the newest assistant message (newlines escaped).
+    std::string final_assistant_tail_esc;
+    /// `messages_.back().role` after the turn (e.g. "assistant" vs "tool").
+    std::string trailing_message_role;
+    /// Empty if the run finished normally; otherwise "interrupted" or "error".
+    std::string run_failure_kind;
+    /// Provider / transport error text when `run_failure_kind == "error"`.
+    std::string provider_error;
+};
+
+// ============================================================================
 // AgentSessionConfig - extended from Config with session-specific settings
 // ============================================================================
 
@@ -115,6 +135,7 @@ struct AgentSessionConfig {
     // Session-specific settings
     bool auto_compaction = true;
     std::string initial_active_tools = "read,bash,edit,write";
+    bool interactive_debug = true;
 
     // Callbacks
     AgentEventHandler on_event;
@@ -271,6 +292,9 @@ class AgentSession {
     /// Get total context tokens.
     int total_context_tokens() const;
 
+    /// Diagnostics from the last `run()` (populated on success and on failure).
+    const TurnDebugInfo& last_turn_debug() const;
+
  private:
     // ====================================================================
     // Internal Run Loop
@@ -279,6 +303,11 @@ class AgentSession {
     bool run_turn(const std::string& user_input,
                   const ChunkCallback& on_chunk,
                   std::atomic<bool>* cancel_flag);
+
+    void finalize_turn_debug(int model_rounds,
+                             bool hit_max_tool_iterations,
+                             const std::string& failure_kind,
+                             const std::string& provider_err);
 
     bool call_provider(const std::vector<ChatMessage>& history,
                        const std::vector<ToolDefinition>& tools,
@@ -326,6 +355,7 @@ class AgentSession {
     CompactionStats last_compaction_stats_;
     int compaction_count_ = 0;
     int turn_index_ = 0;
+    TurnDebugInfo last_turn_debug_{};
 };
 
 }  // namespace coding_agent

@@ -173,6 +173,24 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug) {
             continue;
         }
 
+        if (prompt == "/help") {
+            std::cout << "\n=== Commands ===\n"
+                      << "  /help              Show this help message\n"
+                      << "  /stats             Show session stats and token usage\n"
+                      << "  /tokens            Show token usage\n"
+                      << "  /compact           Manually trigger compaction\n"
+                      << "  /thinking          Cycle thinking level\n"
+                      << "  /queues            Show steering and follow-up queue state\n"
+                      << "  /clear-queues      Clear all pending queues\n"
+                      << "  /new               Create a new session\n"
+                      << "  /branch            Branch current session\n"
+                      << "  /branch summary [text|id]  Branch with summary\n"
+                      << "  /branch from:<id>  Branch from specific entry\n"
+                      << "  /exit, /quit       Exit the agent\n"
+                      << "==================\n\n";
+            continue;
+        }
+
         if (prompt == "/stats" || prompt == "/session") {
             const int total  = agent.total_context_tokens();
             const int budget = cfg.context_size - cfg.compaction_reserve_tokens;

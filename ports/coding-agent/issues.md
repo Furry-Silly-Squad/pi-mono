@@ -2,92 +2,142 @@
 
 Assessment of problems that diverge from robust behavior or from the TypeScript reference implementation.
 
-## Critical / high impact
+## Fixed (resolved in recent commits)
 
-### 1. `std::cin` vs readline in `BashTool::ask_user_to_confirm`
+### 1. `std::cin` vs readline in `BashTool` (FIXED)
 
-**Severity: High** — corrupted stdin / deadlock risk in interactive mode.
+**Was: High** — corrupted stdin / deadlock risk in interactive mode.
 
-**What happens:** `bash_tool.cpp` calls `std::getline(std::cin, ...)` while interactive mode uses readline on the same FD. Buffered input and prompt handling fight each other; confirmation may never run correctly or may steal input meant for the prompt line.
+**Status: Resolved.** `bash_tool.cpp` no longer reads from `std::cin`. Destructive-command gating was moved to `AgentSession::execute_tools()` which checks `bash_command_looks_destructive()` and delegates to `destructive_bash_confirm_` (a callback set by interactive mode). The interactive handler (`confirm_destructive_bash_on_tty`) reads from `/dev/tty`, avoiding the readline stdin conflict. This matches the TypeScript architecture (session/extension layer owns the prompt, not the tool).
 
-**How the TypeScript original handles this:** The core `bash` tool ([`packages/coding-agent/src/core/tools/bash.ts`](../../packages/coding-agent/src/core/tools/bash.ts)) does **not** ask for confirmation on destructive-looking commands. It runs the command (subject to spawn/abort/timeout). Optional safety is layered **outside** the tool:
+### 2. `Provider::cancel()` does not stop in-flight HTTP (FIXED)
 
-- [`examples/extensions/permission-gate.ts`](../../packages/coding-agent/examples/extensions/permission-gate.ts) hooks `tool_call` and, when `ctx.hasUI`, uses `ctx.ui.select(...)` — the TUI owns the interaction, not raw stdin from the tool layer.
-- Plan mode and other extensions block or allow via the same hook pattern instead of reading stdin inside `execute`.
+**Was: Medium** — user abort may not cancel the current streaming request.
 
-**Recommended directions (pick one):**
+**Status: Resolved.** `LlamaCppProvider::cancel()` sets `interrupted_` and, when a request is active, stores `true` into the `std::atomic<bool>` pointed to by `active_cancel_flag_`. `chat()` wires that atomic as `CURLOPT_XFERINFODATA` for the progress callback and checks it in `write_stream_callback`. Curl aborts with `CURLE_ABORTED_BY_CALLBACK` when the callback returns non-zero or the write handler aborts.
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **A. Remove the C++ guardrail** | Matches core TS semantics; no stdin conflict; simpler tool | No built-in “are you sure?” unless added elsewhere |
-| **B. Prompt on `/dev/tty` only** | Keeps a CLI-style confirm without touching readline’s FD | Still not integrated with the port’s UI model; easy to get wrong in pipes/CI |
-| **C. Defer confirm to interactive/agent layer** | Same architecture as TS (tool stays dumb; session/UI decides) | Requires a hook or callback from session → UI before `execute` |
+### 3. `retry_timeout_ms` unused; backoff blocks the agent thread (FIXED)
 
-**Suggestion:** Prefer **A** or **C**. The port README currently documents destructive-command prompts; if removing **A**, update README to say parity with core TS (no in-tool prompt) or document **C** once a `tool_call`-style gate exists.
+**Was: Medium** — sustained retryable errors could hang; no cap on total retry wall time.
+
+**Status: Resolved.** `handle_retryable_error` now enforces a deadline from the first failure. Before each retry it checks `retry_deadline_` and aborts if exceeded. The sleep loop also checks the cancel flag every 50ms.
+
+### 4. Branch-summary handoff opened the previous session twice (FIXED)
+
+**Was: Low** — extra I/O; theoretical inconsistency if the file changes between opens.
+
+**Status: Resolved.** `agent.cpp` opens the prior session once into `handoff_old_mgr` and reuses it for the leaf ID and `generate_branch_summary()` (this was the double-open path; `AgentSession::branchWithSummary()` was not the site of the bug).
+
+### 5. Recursive `handle_retryable_error` (FIXED)
+
+**Was: Low** — harder to reason about.
+
+**Status: Resolved.** Replaced with a `while(true)` loop and explicit `retry_attempt_` counter.
 
 ---
 
-### 2. `Provider::cancel()` does not stop in-flight HTTP (libcurl)
+## Open issues
 
-**Severity: Medium** — user abort (e.g. Ctrl+C) may not cancel the current streaming request.
+### 6. `std::random_device` fallback after `/dev/urandom` failure
 
-**What happens:** Cancellation sets internal flags but the active easy handle is not driven to abort; progress callback may still reference a different cancel path than `interrupted_`.
+**Severity: Low** — rare environments could make ID generation predictable if both sources misbehave.
+
+**Location:** `session_entry.cpp` — `seed_mt19937()`
+
+**What happens:** The implementation reads **`/dev/urandom` first on all Unix-like hosts (including macOS)** and only falls back to `std::random_device` if that read fails (e.g. sandbox without the device node). If `random_device` is low-quality on a given platform, IDs are only weak when the urandom path failed.
 
 **Fix directions:**
-
-| Approach | Notes |
-|----------|-------|
-| **`curl_multi_*` + remove / fail easy handle** | Standard pattern to unblock a stuck transfer |
-| **`CURLOPT_OPENSOCKETFUNCTION` / share + close** | More invasive |
-| **Dedicated thread + `curl_easy_cleanup` from cancel** | Must be thread-safe per libcurl docs |
-
-Wire whatever flag `AgentSession::abort()` sets into the same path the transfer uses (e.g. progress or write callback) and ensure the easy handle is actually stopped.
+- Prefer `getentropy()` where the platform exposes it (`<sys/random.h>` on modern macOS/Linux), then `/dev/urandom`, then `random_device`.
+- Alternatively, mix `random_device` with `getpid()` and `steady_clock` when falling back; document tradeoffs.
 
 ---
 
-### 3. `retry_timeout_ms` unused; backoff blocks the agent thread
+### 7. Dead code: `Conversation` class
 
-**Severity: Medium** — sustained retryable errors can appear to hang; no cap on total retry wall time.
+**Severity: Low** — unnecessary compilation overhead, code maintenance burden.
 
-**What happens:** `handle_retryable_error` never consults `retry_timeout_ms`; `sleep_for` on the main loop thread freezes progress.
+**Location:** `conversation.cpp`, `conversation.hpp`
+
+**What happens:** `Conversation` is a simple `std::vector<ChatMessage>` wrapper that is never instantiated or referenced anywhere in the codebase. All conversation state lives in `AgentSession::messages_`.
+
+**Fix:** Remove `conversation.cpp` and `conversation.hpp`.
+
+---
+
+### 8. `LlamaCppProvider::cancel()` / `chat()` data race on `active_cancel_flag_`
+
+**Severity: Low–Medium** — undefined behavior in theory, rare in practice.
+
+**Location:** `llama_cpp_provider.hpp` / `llama_cpp_provider.cpp`
+
+**What happens:** `cancel()` writes to `active_cancel_flag_` (a raw pointer) while `chat()` reads it. `active_cancel_flag_` is a plain pointer, not atomic. `interrupted_` and `fallback_cancel_` are `std::atomic<bool>`, but the pointer itself is unprotected.
 
 **Fix directions:**
-
-| Approach | Notes |
-|----------|-------|
-| Enforce **deadline** from first failure time vs `retry_timeout_ms` | Minimal change to semantics |
-| **Non-blocking backoff** | Requires scheduler/timer integration if the loop must stay responsive |
-| Cap **attempt count** only | Easier but duplicates/overlaps with `max_retries`; deadline is clearer |
+- Protect `active_cancel_flag_` and `active_curl_` with a mutex, or use an `std::atomic<std::uintptr_t>` to publish the address of the active cancel flag with correct memory order (and document lifetime).
+- Or: document that `cancel()` may only be used from the same thread that called `chat()` in this port; no cross-thread cancel today.
 
 ---
 
-## Lower severity
+### 9. `EditTool::execute()` silently ignores write errors
 
-### 4. `std::random_device` seeding on macOS
+**Severity: Low** — tool reports "Edited file" even if the write failed (disk full, permission denied).
 
-**Severity: Low–Medium** — rare bad configs could make ID generation predictable.
+**Location:** `edit_tool.cpp`
 
-**Alternatives:** Read bytes from `/dev/urandom` or `getentropy()` into the PRNG seed; or use `random_device` only when `entropy()` is trustworthy, else mix with time/pid (document tradeoffs).
+**What happens:** `std::ofstream output(path)` is constructed and `output << content` is called, but the return value / stream state is never checked. `ToolResult::ok` is unconditionally `true`.
 
----
-
-### 5. `branchWithSummary` opens the old session file twice
-
-**Severity: Low** — extra I/O; theoretical inconsistency if the file changes between opens.
-
-**Fix:** Single open / single `SessionManager` (or equivalent) pass for leaf id and summary.
+**Fix:** Check `output.good()` or `output.fail()` after the write and return an error if the stream is in a failure state. Also consider using a temporary file + rename for atomicity (matches TS behavior).
 
 ---
 
-### 6. Recursive `handle_retryable_error`
+### 10. `SessionManager::_persist()` deferred write and threading
 
-**Severity: Low** — depth is bounded by `max_retries` but style is harder to reason about.
+**Severity: Low** — documentation / future threading.
 
-**Fix:** Replace with a `while` loop and explicit attempt counter (behavior-preserving refactor).
+**Location:** `session_entry.cpp` — `SessionManager::_persist()`
+
+**What happens:** Until the first **assistant** message exists, `_persist` returns without writing; entries stay in `fileEntries_` only. Once an assistant message is appended, all prior rows are flushed to disk in one pass (`!flushed_` branch). That is intentional (avoid partial session files with only user turns). Concurrent `_appendEntry` / `_persist` calls are not synchronized.
+
+**Fix:** Document that `_persist` / `SessionManager` are single-threaded. Add synchronization if multiple threads ever append to the same manager.
+
+---
+
+### 11. `LlamaCppProvider::chat()` non-stream fallback can stack on recursive retry
+
+**Severity: Low** — each invalid streamed tool call triggers a recursive `chat()` call, which itself can trigger another fallback.
+
+**Location:** `llama_cpp_provider.cpp` — end of streaming block
+
+**What happens:** When streamed tool-call arguments are invalid JSON, the provider calls `chat(retry_request, ...)` with `stream = false`. If that non-stream retry also fails, the error propagates up. However, if the non-stream response also produces invalid tool calls (unlikely but possible), it could recurse. The current code doesn't guard against this depth.
+
+**Fix:** Add a `bool is_fallback` parameter or counter to prevent infinite recursion, or simply document that the fallback is single-level and accept the risk (the non-stream response is much less likely to have truncated tool calls).
+
+---
+
+### 12. No file locking on session JSONL files
+
+**Severity: Low** — concurrent access to the same session file (e.g. two terminal sessions in the same project) can corrupt the file.
+
+**Location:** `session_entry.cpp` — `_persist()`, `_rewriteFile()`
+
+**What happens:** Multiple `coding-agent` processes appending to the same `.jsonl` file can interleave writes.
+
+**Fix:** Use `flock()` or `fcntl()` for advisory locking on write. Or accept the limitation and document it (the TS port has the same limitation).
+
+---
+
+### 13. `handle_retryable_error` does not re-send the original user prompt on retry
+
+**Severity: Low** — on retry, the provider receives the full message history including the user prompt, but the agent session does not re-emit the user-visible output for the original request. This means the user sees retry chatter but the conversation semantics may be slightly off compared to the TS reference.
+
+**Location:** `agent_session.cpp` — `handle_retryable_error()`
+
+**What happens:** On retry success, the assistant message is appended to `messages_` and the agent continues. The TS reference may handle this differently (e.g., by clearing the failed assistant message and re-sending). Verify parity with the TS implementation's retry behavior.
 
 ---
 
 ## Summary
 
-- **Strongest alignment with the TS codebase:** treat destructive-command policy as **session/extension/UI** concern, not as synchronous stdin inside `BashTool::execute`. Removing the C++ stdin prompt fixes the readline conflict and restores core parity; reintroduce confirmation only via a layer that can show a proper prompt (analogous to `ctx.ui.select` or `tool_call` blocking).
-- **Abort and retry timeout** are real product issues for responsiveness; prioritize wiring cancel through libcurl and honoring `retry_timeout_ms` (plus avoiding unbounded sleep on the hot thread where feasible).
+- **Fixed in recent commits:** stdin/readline conflict (issue 1), curl cancel (issue 2), retry timeout enforcement (issue 3), double-open in branch summary (issue 4), recursive retry (issue 5).
+- **Still open:** random seeding robustness (6), dead Conversation class (7), pointer data race in cancel (8), edit tool write error silence (9), deferred persist / threading (10), non-stream fallback recursion (11), session file locking (12), retry message semantics (13).
+- **Priority:** Issues 6, 8, and 9 are the most actionable. Issue 7 is trivial cleanup. Issues 10-13 are low-priority or documentation.

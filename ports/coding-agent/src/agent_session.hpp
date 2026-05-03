@@ -449,6 +449,7 @@ class AgentSession {
     // ====================================================================
 
     void emit_event(AgentEvent::Type type, const AgentEvent& event);
+    void emit_abort_event();
 
     // ====================================================================
     // State

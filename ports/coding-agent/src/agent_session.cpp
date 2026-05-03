@@ -551,6 +551,13 @@ bool AgentSession::run_turn(const std::string& user_input,
     int empty_completion_nudges    = 0;
 
     for (int iter = 0; iter < config_.max_tool_iterations; ++iter) {
+        // Check for abort before each model call.
+        if (abort_requested_.load(std::memory_order_acquire)) {
+            emit_abort_event();
+            finalize_turn_debug(model_rounds, false, "interrupted", "", empty_completion_nudges);
+            return false;
+        }
+
         // Signal before each model call (drives between-tool animation resume).
         AgentEvent mc_ev{};
         mc_ev.type = AgentEvent::Type::ModelCallStart;
@@ -1213,6 +1220,13 @@ bool AgentSession::handle_retryable_error(const ChunkCallback& on_chunk,
 
 void AgentSession::emit_event(AgentEvent::Type /*type*/, const AgentEvent& event) {
     if (event_handler_) event_handler_(event);
+}
+
+void AgentSession::emit_abort_event() {
+    abort_requested_.store(false, std::memory_order_release);
+    AgentEvent ev{};
+    ev.type = AgentEvent::Type::Abort;
+    emit_event(ev.type, ev);
 }
 
 }  // namespace coding_agent

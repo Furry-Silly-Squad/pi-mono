@@ -128,15 +128,15 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 ---
 
-### 15. `SessionManager::forkFrom()` reads source without locking
+### 15. `SessionManager::forkFrom()` reads source without locking (RESOLVED)
 
-**Severity: Low** — concurrent fork on the same source file.
+**Severity: Was Low** — concurrent fork on the same source file.
 
 **Location:** `session_entry.cpp` — `SessionManager::forkFrom()`
 
-**What happens:** `forkFrom()` calls `loadEntriesFromFile(sourcePath)` which opens and reads the source `.jsonl` file without any file locking. If another process is simultaneously writing to the source file, the read may see a partial line or corrupted JSON.
+**What happened:** `forkFrom()` calls `loadEntriesFromFile(sourcePath)` which opens and reads the source `.jsonl` file without any file locking. If another process is simultaneously writing to the source file, the read may see a partial line or corrupted JSON.
 
-**Fix:** Use `flock()` or `fcntl()` for shared locking on the source file read, or accept the limitation and document it.
+**Status: Resolved by documentation.** Same documentation block added to the SessionManager implementation section covers this case. The single-threaded assumption and lack of file locking apply to all file operations including `forkFrom()`. Adding platform-specific file locking would add complexity for a scenario not supported by the current architecture.
 
 ---
 

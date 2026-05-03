@@ -46,7 +46,14 @@ ToolResult EditTool::execute(const std::string& args_json, const std::string& cw
     content.replace(first, old_string.size(), new_string);
 
     std::ofstream output(path);
+    if (!output.is_open()) {
+      return {.ok = false, .content = "Unable to open file for writing: " + path.string()};
+    }
     output << content;
+    output.flush();
+    if (!output.good()) {
+      return {.ok = false, .content = "Failed to write file: " + path.string()};
+    }
     return {.ok = true, .content = "Edited file: " + path.string()};
   } catch (const std::exception& ex) {
     return {.ok = false, .content = ex.what()};

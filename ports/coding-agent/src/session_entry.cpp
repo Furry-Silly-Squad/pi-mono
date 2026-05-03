@@ -13,6 +13,11 @@
 #include <sstream>
 #include <unordered_set>
 
+#if __has_include(<sys/random.h>)
+#include <sys/random.h>
+#define CODING_AGENT_HAVE_GETENTROPY 1
+#endif
+
 namespace coding_agent {
 
 std::string agent_sessions_root_directory() {
@@ -46,6 +51,14 @@ using nlohmann::json;
 
 void seed_mt19937(std::mt19937& rng) {
   std::array<std::uint32_t, 8> data{};
+#ifdef CODING_AGENT_HAVE_GETENTROPY
+  if (getentropy(reinterpret_cast<unsigned char*>(data.data()),
+                 data.size() * sizeof(std::uint32_t)) == 0) {
+    std::seed_seq seq(data.begin(), data.end());
+    rng.seed(seq);
+    return;
+  }
+#endif
   std::ifstream urandom("/dev/urandom", std::ios::binary);
   if (urandom) {
     urandom.read(reinterpret_cast<char*>(data.data()), data.size() * sizeof(std::uint32_t));

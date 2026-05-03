@@ -34,37 +34,29 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 **Status: Resolved.** Replaced with a `while(true)` loop and explicit `retry_attempt_` counter.
 
+### 6. Session ID random seeding (`seed_mt19937`) (FIXED)
+
+**Was: Low** — weak IDs if `/dev/urandom` and `random_device` both failed or were poor.
+
+**Status: Resolved.** `seed_mt19937()` uses `getentropy()` when `<sys/random.h>` is available, then `/dev/urandom`, then `std::random_device`.
+
+### 7. Dead code: `Conversation` class (FIXED)
+
+**Was: Low** — unused wrapper around `std::vector<ChatMessage>`.
+
+**Status: Resolved.** Removed `conversation.cpp` and `conversation.hpp` (nothing referenced them).
+
+### 8. `EditTool::execute()` silently ignores write errors (FIXED)
+
+**Was: Low** — disk full / permission errors could leave `ToolResult::ok == true`.
+
+**Status: Resolved.** `edit_tool.cpp` checks that the output stream opens, then verifies `good()` after `flush()`.
+
 ---
 
 ## Open issues
 
-### 6. `std::random_device` fallback after `/dev/urandom` failure
-
-**Severity: Low** — rare environments could make ID generation predictable if both sources misbehave.
-
-**Location:** `session_entry.cpp` — `seed_mt19937()`
-
-**What happens:** The implementation reads **`/dev/urandom` first on all Unix-like hosts (including macOS)** and only falls back to `std::random_device` if that read fails (e.g. sandbox without the device node). If `random_device` is low-quality on a given platform, IDs are only weak when the urandom path failed.
-
-**Fix directions:**
-- Prefer `getentropy()` where the platform exposes it (`<sys/random.h>` on modern macOS/Linux), then `/dev/urandom`, then `random_device`.
-- Alternatively, mix `random_device` with `getpid()` and `steady_clock` when falling back; document tradeoffs.
-
----
-
-### 7. Dead code: `Conversation` class
-
-**Severity: Low** — unnecessary compilation overhead, code maintenance burden.
-
-**Location:** `conversation.cpp`, `conversation.hpp`
-
-**What happens:** `Conversation` is a simple `std::vector<ChatMessage>` wrapper that is never instantiated or referenced anywhere in the codebase. All conversation state lives in `AgentSession::messages_`.
-
-**Fix:** Remove `conversation.cpp` and `conversation.hpp`.
-
----
-
-### 8. `LlamaCppProvider::cancel()` / `chat()` data race on `active_cancel_flag_`
+### 9. `LlamaCppProvider::cancel()` / `chat()` data race on `active_cancel_flag_`
 
 **Severity: Low–Medium** — undefined behavior in theory, rare in practice.
 
@@ -75,18 +67,6 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 **Fix directions:**
 - Protect `active_cancel_flag_` and `active_curl_` with a mutex, or use an `std::atomic<std::uintptr_t>` to publish the address of the active cancel flag with correct memory order (and document lifetime).
 - Or: document that `cancel()` may only be used from the same thread that called `chat()` in this port; no cross-thread cancel today.
-
----
-
-### 9. `EditTool::execute()` silently ignores write errors
-
-**Severity: Low** — tool reports "Edited file" even if the write failed (disk full, permission denied).
-
-**Location:** `edit_tool.cpp`
-
-**What happens:** `std::ofstream output(path)` is constructed and `output << content` is called, but the return value / stream state is never checked. `ToolResult::ok` is unconditionally `true`.
-
-**Fix:** Check `output.good()` or `output.fail()` after the write and return an error if the stream is in a failure state. Also consider using a temporary file + rename for atomicity (matches TS behavior).
 
 ---
 
@@ -138,6 +118,6 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 ## Summary
 
-- **Fixed in recent commits:** stdin/readline conflict (issue 1), curl cancel (issue 2), retry timeout enforcement (issue 3), double-open in branch summary (issue 4), recursive retry (issue 5).
-- **Still open:** random seeding robustness (6), dead Conversation class (7), pointer data race in cancel (8), edit tool write error silence (9), deferred persist / threading (10), non-stream fallback recursion (11), session file locking (12), retry message semantics (13).
-- **Priority:** Issues 6, 8, and 9 are the most actionable. Issue 7 is trivial cleanup. Issues 10-13 are low-priority or documentation.
+- **Fixed in recent commits:** Issues 1-5 (earlier), plus 6 (`getentropy` / urandom / `random_device` seed chain), 7 (removed `Conversation`), 8 (edit write checks).
+- **Still open:** cancel pointer lifetime vs threading (9), deferred persist / threading docs (10), non-stream fallback depth (11), session file locking (12), retry UX parity (13).
+- **Priority:** Issue 9 next if cross-thread cancel matters; otherwise 10-13 are documentation or edge cases.

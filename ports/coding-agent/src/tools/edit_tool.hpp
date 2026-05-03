@@ -9,6 +9,7 @@ class EditTool final : public Tool {
   std::string name() const override;
   std::string description() const override;
   std::string parameters_schema() const override;
+  ToolExecutionMode execution_mode() const override;
   ToolResult execute(const std::string& args_json, const std::string& cwd) override;
 };
 

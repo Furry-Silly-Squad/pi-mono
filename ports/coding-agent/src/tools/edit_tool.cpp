@@ -60,6 +60,10 @@ std::string EditTool::parameters_schema() const {
   return R"({"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]})";
 }
 
+ToolExecutionMode EditTool::execution_mode() const {
+  return ToolExecutionMode::Sequential;
+}
+
 ToolResult EditTool::execute(const std::string& args_json, const std::string& cwd) {
   try {
     const auto args = nlohmann::json::parse(args_json);

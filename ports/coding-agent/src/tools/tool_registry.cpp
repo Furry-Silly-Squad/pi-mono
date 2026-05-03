@@ -24,6 +24,7 @@ std::vector<ToolDefinition> ToolRegistry::build_tool_definitions() const {
             .name = tool->name(),
             .description = tool->description(),
             .parameters_schema_json = tool->parameters_schema(),
+            .execution_mode = tool->execution_mode(),
         }
     );
   }

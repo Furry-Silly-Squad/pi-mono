@@ -21,6 +21,10 @@ std::string BashTool::parameters_schema() const {
   return R"({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})";
 }
 
+ToolExecutionMode BashTool::execution_mode() const {
+  return ToolExecutionMode::Sequential;
+}
+
 ToolResult BashTool::execute(const std::string& args_json, const std::string& cwd) {
   try {
     const auto args = nlohmann::json::parse(args_json);

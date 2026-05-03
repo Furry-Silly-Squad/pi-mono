@@ -678,6 +678,500 @@ bool test_empty_completion_nudge() {
 }
 
 // ===========================================================================
+// Test 8: Per-tool executionMode - parallel with all-parallel tools stays parallel
+// ===========================================================================
+
+class ReadTool final : public coding_agent::Tool {
+ public:
+  std::string name() const override { return "read"; }
+  std::string description() const override { return "read a file"; }
+  std::string parameters_schema() const override {
+    return R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})";
+  }
+  std::string content() const { return content_; }
+  void set_content(const std::string& c) { content_ = c; }
+  coding_agent::ToolResult execute(const std::string& /*args_json*/,
+                                   const std::string& /*cwd*/) override {
+    ++call_count_;
+    return coding_agent::ToolResult{.ok = true, .content = content_};
+  }
+  int call_count() const { return call_count_; }
+ private:
+  int call_count_ = 0;
+  std::string content_ = "file content";
+};
+
+bool test_per_tool_parallel_all_parallel() {
+  const fs::path session_dir = make_temp_dir("per_tool_parallel");
+
+  ScriptedProvider provider;
+  coding_agent::ChatResponse with_tools;
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_1", .name = "read", .arguments_json = R"({"path":"a.txt"})"
+  });
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_2", .name = "noop", .arguments_json = "{}"
+  });
+  with_tools.completion_tokens = 5;
+  provider.enqueue(with_tools);
+
+  coding_agent::ChatResponse done;
+  done.content = "done";
+  done.completion_tokens = 2;
+  provider.enqueue(done);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<ReadTool>());
+  tools.register_tool(std::make_unique<NoopTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.initial_active_tools = "read,noop";
+  cfg.tool_execution_mode = "parallel";
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  std::vector<coding_agent::AgentEvent::Type> events;
+  agent.set_event_handler([&events](const coding_agent::AgentEvent& ev) {
+    events.push_back(ev.type);
+  });
+
+  const bool ok = agent.run("test", [](const std::string&) {});
+  EXPECT(ok, "parallel all-parallel tools must succeed");
+  EXPECT(events.size() == 8, "expected 8 events (parallel: 2 ToolCall + 2 ToolResult + 4 others)");
+  EXPECT(events[2] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #1");
+  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2");
+  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
+
+  return true;
+}
+
+// ===========================================================================
+// Test 9: Per-tool executionMode - parallel global but one sequential tool
+//        causes entire batch to run sequentially
+// ===========================================================================
+
+class SequentialTool final : public coding_agent::Tool {
+ public:
+  std::string name() const override { return "seq_tool"; }
+  std::string description() const override { return "sequential-only tool"; }
+  std::string parameters_schema() const override { return "{}"; }
+  coding_agent::ToolExecutionMode execution_mode() const override { return coding_agent::ToolExecutionMode::Sequential; }
+  coding_agent::ToolResult execute(const std::string& /*args_json*/,
+                                   const std::string& /*cwd*/) override {
+    ++call_count_;
+    return coding_agent::ToolResult{.ok = true, .content = "seq_result"};
+  }
+  int call_count() const { return call_count_; }
+ private:
+  int call_count_ = 0;
+};
+
+bool test_per_tool_parallel_with_sequential_tool() {
+  const fs::path session_dir = make_temp_dir("per_tool_seq");
+
+  ScriptedProvider provider;
+  coding_agent::ChatResponse with_tools;
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_1", .name = "read", .arguments_json = R"({"path":"a.txt"})"
+  });
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_2", .name = "seq_tool", .arguments_json = "{}"
+  });
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_3", .name = "noop", .arguments_json = "{}"
+  });
+  with_tools.completion_tokens = 5;
+  provider.enqueue(with_tools);
+
+  coding_agent::ChatResponse done;
+  done.content = "done";
+  done.completion_tokens = 2;
+  provider.enqueue(done);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<ReadTool>());
+  tools.register_tool(std::make_unique<SequentialTool>());
+  tools.register_tool(std::make_unique<NoopTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.initial_active_tools = "read,seq_tool,noop";
+  cfg.tool_execution_mode = "parallel";  // global parallel, but seq_tool forces sequential
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  std::vector<coding_agent::AgentEvent::Type> events;
+  agent.set_event_handler([&events](const coding_agent::AgentEvent& ev) {
+    events.push_back(ev.type);
+  });
+
+  const bool ok = agent.run("test", [](const std::string&) {});
+  EXPECT(ok, "parallel with sequential tool must succeed");
+  EXPECT(events.size() == 10, "expected 10 events (sequential: 3 ToolCall + 3 ToolResult interleaved + 4 others)");
+  // Sequential: ToolCall, ToolResult, ToolCall, ToolResult, ...
+  EXPECT(events[2] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #1");
+  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
+  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2");
+  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2");
+  EXPECT(events[6] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #3");
+  EXPECT(events[7] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #3");
+
+  return true;
+}
+
+// ===========================================================================
+// Test 10: Per-tool executionMode - global sequential stays sequential
+// ===========================================================================
+
+bool test_per_tool_global_sequential() {
+  const fs::path session_dir = make_temp_dir("per_tool_global_seq");
+
+  ScriptedProvider provider;
+  coding_agent::ChatResponse with_tools;
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_1", .name = "read", .arguments_json = R"({"path":"a.txt"})"
+  });
+  with_tools.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_2", .name = "noop", .arguments_json = "{}"
+  });
+  with_tools.completion_tokens = 5;
+  provider.enqueue(with_tools);
+
+  coding_agent::ChatResponse done;
+  done.content = "done";
+  done.completion_tokens = 2;
+  provider.enqueue(done);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<ReadTool>());
+  tools.register_tool(std::make_unique<NoopTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.initial_active_tools = "read,noop";
+  cfg.tool_execution_mode = "sequential";  // global sequential
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  std::vector<coding_agent::AgentEvent::Type> events;
+  agent.set_event_handler([&events](const coding_agent::AgentEvent& ev) {
+    events.push_back(ev.type);
+  });
+
+  const bool ok = agent.run("test", [](const std::string&) {});
+  EXPECT(ok, "global sequential must succeed");
+  // Sequential: ToolCall, ToolResult, ToolCall, ToolResult
+  EXPECT(events.size() == 8, "expected 8 events (sequential + 4 others)");
+  EXPECT(events[2] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #1");
+  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
+  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2");
+  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2");
+
+  return true;
+}
+
+// ===========================================================================
+// Test 11: ToolDefinition carries execution_mode from Tool
+// ===========================================================================
+
+bool test_tool_definition_execution_mode() {
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<ReadTool>());
+  tools.register_tool(std::make_unique<SequentialTool>());
+  tools.register_tool(std::make_unique<NoopTool>());
+
+  const auto defs = tools.build_tool_definitions();
+  EXPECT(defs.size() == 3, "three tool definitions");
+
+  const coding_agent::ToolDefinition* read_def = nullptr;
+  const coding_agent::ToolDefinition* seq_def = nullptr;
+  const coding_agent::ToolDefinition* noop_def = nullptr;
+  for (const auto& def : defs) {
+    if (def.name == "read") read_def = &def;
+    if (def.name == "seq_tool") seq_def = &def;
+    if (def.name == "noop") noop_def = &def;
+  }
+  EXPECT(read_def != nullptr, "read definition present");
+  EXPECT(seq_def != nullptr, "seq_tool definition present");
+  EXPECT(noop_def != nullptr, "noop definition present");
+
+  EXPECT(read_def->execution_mode == coding_agent::ToolExecutionMode::Parallel,
+         "read defaults to parallel");
+  EXPECT(seq_def->execution_mode == coding_agent::ToolExecutionMode::Sequential,
+         "seq_tool is sequential");
+  EXPECT(noop_def->execution_mode == coding_agent::ToolExecutionMode::Parallel,
+         "noop defaults to parallel");
+
+  return true;
+}
+
+// ===========================================================================
+// Test 12: Tool hooks - beforeToolCall can block execution
+// ===========================================================================
+
+bool test_hooks_before_tool_call_block() {
+  const fs::path session_dir = make_temp_dir("hooks_before");
+
+  ScriptedProvider provider;
+  coding_agent::ChatResponse with_tool;
+  with_tool.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_1", .name = "echo", .arguments_json = R"({"text":"hi"})",
+  });
+  with_tool.completion_tokens = 5;
+  provider.enqueue(with_tool);
+
+  coding_agent::ChatResponse done;
+  done.content = "done";
+  done.completion_tokens = 2;
+  provider.enqueue(done);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<EchoTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.tool_execution_mode = "sequential";
+
+  bool before_hook_called = false;
+  cfg.before_tool_call = [&before_hook_called](const coding_agent::BeforeToolCallContext& ctx) -> coding_agent::BeforeToolCallResult {
+    before_hook_called = true;
+    if (ctx.tool_name != "echo") { std::cerr << "FAIL: before hook receives wrong tool name\n"; return {.block = true, .reason = "assertion"}; }
+    if (ctx.tool_call_id != "call_1") { std::cerr << "FAIL: before hook receives wrong call id\n"; return {.block = true, .reason = "assertion"}; }
+    if (ctx.args.find("\"text\"") == std::string::npos) { std::cerr << "FAIL: before hook missing args\n"; return {.block = true, .reason = "assertion"}; }
+    return coding_agent::BeforeToolCallResult{
+        .block = true,
+        .reason = "Blocked by beforeToolCall hook",
+    };
+  };
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  std::vector<coding_agent::AgentEvent::Type> events;
+  agent.set_event_handler([&events](const coding_agent::AgentEvent& ev) {
+    events.push_back(ev.type);
+  });
+
+  const bool ok = agent.run("test", [](const std::string&) {});
+  EXPECT(ok, "run with blocked tool must succeed");
+  EXPECT(before_hook_called, "beforeToolCall hook must be invoked");
+
+  // Tool should have been blocked: system + user + assistant + tool(error) + assistant = 5
+  EXPECT(agent.message_count() == 5, "blocked tool still produces tool message");
+  EXPECT(agent.messages()[3].role == "tool", "tool message present");
+  EXPECT(agent.messages()[3].content.find("Blocked by beforeToolCall hook") != std::string::npos,
+         "tool result contains block reason");
+  EXPECT(events.size() == 6, "expected 6 events (TurnStart, ModelCallStart, ToolCall, ToolResult, ModelCallStart, TurnEnd)");
+
+  return true;
+}
+
+// ===========================================================================
+// Test 13: Tool hooks - afterToolCall can modify result content
+// ===========================================================================
+
+bool test_hooks_after_tool_call_modify() {
+  const fs::path session_dir = make_temp_dir("hooks_after");
+
+  ScriptedProvider provider;
+  coding_agent::ChatResponse with_tool;
+  with_tool.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_1", .name = "echo", .arguments_json = R"({"text":"hi"})",
+  });
+  with_tool.completion_tokens = 5;
+  provider.enqueue(with_tool);
+
+  coding_agent::ChatResponse done;
+  done.content = "done";
+  done.completion_tokens = 2;
+  provider.enqueue(done);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<EchoTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.tool_execution_mode = "sequential";
+
+  cfg.after_tool_call = [](const coding_agent::AfterToolCallContext& ctx) -> coding_agent::AfterToolCallResult {
+    if (ctx.tool_name != "echo") { std::cerr << "FAIL: after hook receives wrong tool name\n"; return {.content = "assertion", .isError = true}; }
+    if (ctx.result != "echoed") { std::cerr << "FAIL: after hook receives wrong result\n"; return {.content = "assertion", .isError = true}; }
+    return coding_agent::AfterToolCallResult{
+        .content = "modified by afterToolCall hook",
+        .isError = false,
+    };
+  };
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  std::vector<coding_agent::AgentEvent::Type> events;
+  agent.set_event_handler([&events](const coding_agent::AgentEvent& ev) {
+    events.push_back(ev.type);
+  });
+
+  const bool ok = agent.run("test", [](const std::string&) {});
+  EXPECT(ok, "run with after hook must succeed");
+
+  // Tool result should be modified: system + user + assistant + tool(modified) + assistant = 5
+  EXPECT(agent.message_count() == 5, "modified tool message present");
+  EXPECT(agent.messages()[3].content.find("modified by afterToolCall hook") != std::string::npos,
+         "tool result contains modified content");
+
+  return true;
+}
+
+// ===========================================================================
+// Test 14: Tool hooks - beforeToolCall and afterToolCall both fire
+// ===========================================================================
+
+bool test_hooks_both_before_and_after() {
+  const fs::path session_dir = make_temp_dir("hooks_both");
+
+  ScriptedProvider provider;
+  coding_agent::ChatResponse with_tool;
+  with_tool.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_1", .name = "echo", .arguments_json = R"({"text":"hi"})",
+  });
+  with_tool.completion_tokens = 5;
+  provider.enqueue(with_tool);
+
+  coding_agent::ChatResponse done;
+  done.content = "done";
+  done.completion_tokens = 2;
+  provider.enqueue(done);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<EchoTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.tool_execution_mode = "sequential";
+
+  bool before_called = false;
+  bool after_called = false;
+  cfg.before_tool_call = [&before_called](const coding_agent::BeforeToolCallContext&) {
+    before_called = true;
+    return coding_agent::BeforeToolCallResult{};
+  };
+  cfg.after_tool_call = [&after_called](const coding_agent::AfterToolCallContext&) {
+    after_called = true;
+    return coding_agent::AfterToolCallResult{};
+  };
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  const bool ok = agent.run("test", [](const std::string&) {});
+  EXPECT(ok, "run with both hooks must succeed");
+  EXPECT(before_called, "beforeToolCall hook must be invoked");
+  EXPECT(after_called, "afterToolCall hook must be invoked");
+
+  return true;
+}
+
+// ===========================================================================
+// Test 15: transformContext - callback invoked and messages transformed
+// ===========================================================================
+
+bool test_transform_context() {
+  const fs::path session_dir = make_temp_dir("transform");
+
+  ScriptedProvider provider;
+  coding_agent::ChatResponse first;
+  first.content = "transformed";
+  first.completion_tokens = 5;
+  provider.enqueue(first);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<EchoTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.model = "fake-model";
+
+  bool transform_called = false;
+  cfg.transform_context = [&transform_called](const std::vector<coding_agent::ChatMessage>& msgs) -> std::vector<coding_agent::ChatMessage> {
+    transform_called = true;
+    // Verify we receive at least the system message
+    if (msgs.empty()) { std::cerr << "FAIL: transform_context receives empty messages\n"; return {}; }
+    if (msgs.front().role != "system") { std::cerr << "FAIL: first message is not system\n"; return {}; }
+    // Return original messages (no transformation for this test)
+    return msgs;
+  };
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  const bool ok = agent.run("test", [](const std::string&) {});
+  EXPECT(ok, "run with transformContext must succeed");
+  EXPECT(transform_called, "transform_context must be invoked before provider call");
+
+  return true;
+}
+
+// ===========================================================================
+// Test 16: transformContext - can trim messages
+// ===========================================================================
+
+bool test_transform_context_trim() {
+  const fs::path session_dir = make_temp_dir("transform_trim");
+
+  ScriptedProvider provider;
+  coding_agent::ChatResponse first;
+  first.content = "trimmed";
+  first.completion_tokens = 5;
+  provider.enqueue(first);
+
+  coding_agent::ToolRegistry tools;
+  tools.register_tool(std::make_unique<EchoTool>());
+
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.model = "fake-model";
+
+  // Pre-seed with extra messages
+  for (int i = 0; i < 5; ++i) {
+    coding_agent::ChatMessage filler{
+        .role = (i % 2 == 0 ? "user" : "assistant"),
+        .content = "filler message " + std::to_string(i),
+    };
+    filler.entry_id = session_mgr->appendMessage(filler);
+  }
+
+  int transform_call_count = 0;
+  cfg.transform_context = [&transform_call_count](const std::vector<coding_agent::ChatMessage>& msgs) {
+    ++transform_call_count;
+    // Trim to only system message + last 2 messages
+    std::vector<coding_agent::ChatMessage> trimmed;
+    if (!msgs.empty()) {
+      trimmed.push_back(msgs.front());  // system
+    }
+    const size_t tail = std::min(static_cast<size_t>(2), msgs.size());
+    for (size_t i = msgs.size() - tail; i < msgs.size(); ++i) {
+      // Avoid duplicates if system is also in tail
+      if (trimmed.empty() || trimmed.back().role != msgs[i].role || trimmed.back().content != msgs[i].content) {
+        trimmed.push_back(msgs[i]);
+      }
+    }
+    return trimmed;
+  };
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  const bool ok = agent.run("test", [](const std::string&) {});
+  EXPECT(ok, "run with transformContext trim must succeed");
+  EXPECT(transform_call_count >= 1, "transform_context called at least once");
+
+  return true;
+}
+
+// ===========================================================================
 // Driver
 // ===========================================================================
 
@@ -698,6 +1192,15 @@ int main() {
       {"thinking_and_model", test_thinking_and_model},
       {"parallel_tool_execution", test_parallel_tool_execution},
       {"empty_completion_nudge", test_empty_completion_nudge},
+      {"per_tool_parallel_all_parallel", test_per_tool_parallel_all_parallel},
+      {"per_tool_parallel_with_sequential_tool", test_per_tool_parallel_with_sequential_tool},
+      {"per_tool_global_sequential", test_per_tool_global_sequential},
+      {"tool_definition_execution_mode", test_tool_definition_execution_mode},
+      {"hooks_before_tool_call_block", test_hooks_before_tool_call_block},
+      {"hooks_after_tool_call_modify", test_hooks_after_tool_call_modify},
+      {"hooks_both_before_and_after", test_hooks_both_before_and_after},
+      {"transform_context", test_transform_context},
+      {"transform_context_trim", test_transform_context_trim},
   };
 
   int passed = 0;

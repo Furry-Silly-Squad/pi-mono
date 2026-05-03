@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "tools/tool.hpp"
+
 namespace coding_agent {
 
 struct ToolCall {
@@ -27,6 +29,7 @@ struct ToolDefinition {
   std::string name;
   std::string description;
   std::string parameters_schema_json;
+  ToolExecutionMode execution_mode = ToolExecutionMode::Parallel;
 };
 
 struct ChatRequest {
@@ -58,6 +61,10 @@ class Provider {
       std::atomic<bool>* cancel_flag = nullptr
   ) = 0;
   virtual void cancel() = 0;
+  /// Set the API key for subsequent requests. Used by dynamic key resolution.
+  virtual void set_api_key(const std::string& key) {
+    (void)key;  // Default: no-op
+  }
 };
 
 }  // namespace coding_agent

@@ -144,6 +144,39 @@ struct TurnDebugInfo {
 };
 
 // ============================================================================
+// Tool Hook Types
+// ============================================================================
+
+/// Result returned by a beforeToolCall hook.
+struct BeforeToolCallResult {
+    bool block = false;
+    std::string reason;  // optional reason when blocking
+};
+
+/// Result returned by an afterToolCall hook.
+struct AfterToolCallResult {
+    std::string content;
+    bool terminate = false;
+    bool isError = false;
+};
+
+/// Hook context for beforeToolCall.
+struct BeforeToolCallContext {
+    std::string tool_name;
+    std::string tool_call_id;
+    std::string args;
+};
+
+/// Hook context for afterToolCall.
+struct AfterToolCallContext {
+    std::string tool_name;
+    std::string tool_call_id;
+    std::string args;
+    std::string result;
+    bool isError;
+};
+
+// ============================================================================
 // AgentSessionConfig - extended from Config with session-specific settings
 // ============================================================================
 
@@ -186,6 +219,20 @@ struct AgentSessionConfig {
 
     // Callbacks
     AgentEventHandler on_event;
+
+    // Tool hooks (optional)
+    std::function<BeforeToolCallResult(const BeforeToolCallContext&)> before_tool_call;
+    std::function<AfterToolCallResult(const AfterToolCallContext&)> after_tool_call;
+
+    // Transform context callback (optional).
+    // Called before each provider call to trim or augment messages.
+    // Returns the (possibly modified) message list to send to the provider.
+    std::function<std::vector<ChatMessage>(const std::vector<ChatMessage>&)> transform_context;
+
+    // Dynamic API key resolver (optional).
+    // Called before each provider call to resolve the API key.
+    // Useful for OAuth / rotating tokens. If unset, uses `api_key` from config.
+    std::function<std::string(const std::string& provider)> get_api_key;
 };
 
 // ============================================================================
@@ -449,6 +496,11 @@ class AgentSession {
     // Used by both sequential and parallel execution paths.
     ToolResult execute_single_tool_raw(const ToolCall& call,
                                        const ChunkCallback& on_chunk);
+
+    // Execute a single tool with hooks, returning the final result.
+    // Before hooks can block execution; after hooks can modify the result.
+    // Used by execute_single_tool internally.
+    ToolResult execute_single_tool_with_hooks(const ToolCall& call);
 
     // Execute a single tool, emitting events and appending messages (sequential path).
     void execute_single_tool(const ToolCall& call,

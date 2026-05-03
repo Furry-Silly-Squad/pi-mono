@@ -21,6 +21,9 @@ class LlamaCppProvider final : public Provider {
       std::atomic<bool>* cancel_flag = nullptr
   ) override;
   void cancel() override;
+  void set_api_key(const std::string& key) override {
+    api_key_ = key;
+  }
 
  private:
   std::string base_url_;

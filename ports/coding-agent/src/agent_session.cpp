@@ -17,6 +17,7 @@
 #include "session_entry.hpp"
 #include "system_prompt.hpp"
 #include "tools/bash_destructive.hpp"
+#include "tools/tool.hpp"
 
 namespace coding_agent {
 namespace {
@@ -578,7 +579,14 @@ bool AgentSession::run_turn(const std::string& user_input,
 
         ChatResponse response;
         std::string error;
-        if (!call_provider(messages_, active_tool_definitions(), response, error, on_chunk, cancel_flag)) {
+
+        // Apply transformContext if configured (trim or augment messages before each provider call).
+        std::vector<ChatMessage> provider_messages = messages_;
+        if (config_.transform_context) {
+            provider_messages = config_.transform_context(messages_);
+        }
+
+        if (!call_provider(provider_messages, active_tool_definitions(), response, error, on_chunk, cancel_flag)) {
             if (error == "interrupted") {
                 // abort() sets abort_requested_ then provider.cancel(); interruption may surface
                 // here rather than at the top-of-loop check, so emit Abort in that case too.
@@ -782,6 +790,48 @@ ToolResult AgentSession::execute_single_tool_raw(const ToolCall& call,
     return result;
 }
 
+// Execute a single tool with hooks, returning the final result.
+// Before hooks can block execution; after hooks can modify the result.
+ToolResult AgentSession::execute_single_tool_with_hooks(const ToolCall& call) {
+    ToolResult result{.ok = false, .content = {}};
+
+    // Run beforeToolCall hook (sequential preflight)
+    if (config_.before_tool_call) {
+        BeforeToolCallContext ctx{
+            .tool_name = call.name,
+            .tool_call_id = call.id,
+            .args = call.arguments_json,
+        };
+        BeforeToolCallResult hook_result = config_.before_tool_call(ctx);
+        if (hook_result.block) {
+            result = {.ok = false, .content = hook_result.reason.empty()
+                                                  ? "Tool execution was blocked"
+                                                  : hook_result.reason};
+            return result;
+        }
+    }
+
+    // Execute the tool
+    result = execute_single_tool_raw(call, [](const std::string&) {});
+
+    // Run afterToolCall hook
+    if (config_.after_tool_call && result.ok) {
+        AfterToolCallContext ctx{
+            .tool_name = call.name,
+            .tool_call_id = call.id,
+            .args = call.arguments_json,
+            .result = result.content,
+            .isError = !result.ok,
+        };
+        AfterToolCallResult hook_result = config_.after_tool_call(ctx);
+        if (!hook_result.content.empty()) {
+            result.content = hook_result.content;
+        }
+    }
+
+    return result;
+}
+
 // Emit tool result event and append tool message (thread-safe via mutex).
 void AgentSession::emit_tool_result(const ToolCall& call,
                                     const ToolResult& result) {
@@ -816,7 +866,7 @@ void AgentSession::execute_single_tool(const ToolCall& call,
 
     on_chunk("[tool: " + call.name + "] " + describe_tool_call(call.name, call.arguments_json) + "\n");
 
-    ToolResult result = execute_single_tool_raw(call, on_chunk);
+    ToolResult result = execute_single_tool_with_hooks(call);
 
     on_chunk("[tool: " + call.name + "] " +
              (result.ok ? "done" : "failed: " + result.content) + "\n");
@@ -828,10 +878,27 @@ bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
                                  const ChunkCallback& on_chunk) {
     if (tool_calls.empty()) return true;
 
-    const bool parallel = config_.tool_execution_mode == "parallel";
+    const bool global_parallel = config_.tool_execution_mode == "parallel";
 
-    if (!parallel || tool_calls.size() == 1) {
-        // Sequential execution (default or single tool)
+    // Check if any tool in the batch is marked sequential.
+    // If global mode is parallel but any tool is sequential, run the entire batch sequentially.
+    bool batch_is_sequential = !global_parallel;
+    if (global_parallel && !batch_is_sequential) {
+        const auto all_defs = tools_.build_tool_definitions();
+        for (const auto& call : tool_calls) {
+            for (const auto& def : all_defs) {
+                if (def.name == call.name &&
+                    def.execution_mode == ToolExecutionMode::Sequential) {
+                    batch_is_sequential = true;
+                    break;
+                }
+            }
+            if (batch_is_sequential) break;
+        }
+    }
+
+    if (batch_is_sequential || tool_calls.size() == 1) {
+        // Sequential execution (default, any sequential tool present, or single tool)
         for (const auto& call : tool_calls) {
             execute_single_tool(call, on_chunk);
         }
@@ -862,18 +929,57 @@ bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
                  describe_tool_call(item.call.name, item.call.arguments_json) + "\n");
     }
 
+    // Run beforeToolCall hooks sequentially (preflight) for all tools.
+    for (size_t i = 0; i < tool_calls.size(); ++i) {
+        auto& item = work_items[i];
+        if (config_.before_tool_call) {
+            BeforeToolCallContext ctx{
+                .tool_name = item.call.name,
+                .tool_call_id = item.call.id,
+                .args = item.call.arguments_json,
+            };
+            BeforeToolCallResult hook_result = config_.before_tool_call(ctx);
+            if (hook_result.block) {
+                item.result = {.ok = false, .content = hook_result.reason.empty()
+                                                          ? "Tool execution was blocked"
+                                                          : hook_result.reason};
+            }
+        }
+    }
+
+    // Execute tools in parallel (only those not blocked by before hooks).
     std::vector<std::thread> threads;
     threads.reserve(tool_calls.size());
     for (size_t i = 0; i < tool_calls.size(); ++i) {
         threads.emplace_back([this, &work_items, i]() {
-            auto& item      = work_items[i];
-            item.result     = execute_single_tool_raw(item.call, [](const std::string&) {});
+            auto& item = work_items[i];
+            if (item.result.ok) {
+                item.result = execute_single_tool_raw(item.call, [](const std::string&) {});
+            }
         });
     }
 
     for (auto& t : threads) {
         if (t.joinable()) {
             t.join();
+        }
+    }
+
+    // Run afterToolCall hooks sequentially for all tools.
+    for (size_t i = 0; i < tool_calls.size(); ++i) {
+        auto& item = work_items[i];
+        if (config_.after_tool_call && item.result.ok) {
+            AfterToolCallContext ctx{
+                .tool_name = item.call.name,
+                .tool_call_id = item.call.id,
+                .args = item.call.arguments_json,
+                .result = item.result.content,
+                .isError = !item.result.ok,
+            };
+            AfterToolCallResult hook_result = config_.after_tool_call(ctx);
+            if (!hook_result.content.empty()) {
+                item.result.content = hook_result.content;
+            }
         }
     }
 

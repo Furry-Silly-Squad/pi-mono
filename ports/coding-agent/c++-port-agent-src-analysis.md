@@ -89,10 +89,10 @@ These rules govern **when the runtime may run multiple tool calls from one assis
 ## Suggested implementation order
 
 1. ~~Parallel tool execution (global only)~~ **done** (thread-per-call batch; config + tests).
-2. **Per-tool `executionMode` + batch rule** — matches TS scheduling and makes global `parallel` safe for mixed tool batches.
-3. **Tool hooks** — sequential preflight and post-processing aligned with TS.
-4. **`transformContext`** — external context control without forking `AgentSession`.
-5. **Dynamic `getApiKey`** — auth parity for long sessions.
+2. ~~**Per-tool `executionMode` + batch rule** — matches TS scheduling and makes global `parallel` safe for mixed tool batches.~~ **done** (Tool::execution_mode(), ToolDefinition::execution_mode, batch downgrade rule, sequential defaults for write/edit/bash, tests).
+3. ~~**Tool hooks** — sequential preflight and post-processing aligned with TS.~~ **done** (`before_tool_call` / `after_tool_call` in `AgentSessionConfig`, sequential preflight for both sequential and parallel paths, after-tool result modification, tests).
+4. ~~**`transformContext`** — optional callback to trim or augment messages before each provider call.~~ **done** (`transform_context` in `AgentSessionConfig`, applied in `run_turn` before each `call_provider`, tests).
+5. **Dynamic `getApiKey`** — per-call resolution for OAuth / rotating tokens.
 6. **Event taxonomy** — after hooks, when observability requirements are clear.
 7. **Loop extraction** — when the above stabilize to avoid churn.
 

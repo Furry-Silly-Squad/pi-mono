@@ -1,12 +1,52 @@
 #include "tools/edit_tool.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
 
 namespace coding_agent {
+namespace {
+
+std::string make_temp_suffix() {
+  static thread_local std::mt19937 rng(std::random_device{}());
+  std::uniform_int_distribution<unsigned int> dist(0, 0xFFFFFFU);
+  return ".tmp-" + std::to_string(
+                      std::chrono::steady_clock::now().time_since_epoch().count()) +
+         "-" + std::to_string(dist(rng));
+}
+
+ToolResult write_file_atomic(const std::filesystem::path& path, const std::string& content) {
+  const std::filesystem::path temp_path = path.parent_path() / (path.filename().string() + make_temp_suffix());
+
+  {
+    std::ofstream output(temp_path, std::ios::binary | std::ios::trunc);
+    if (!output.is_open()) {
+      return {.ok = false, .content = "Unable to open temp file for writing: " + temp_path.string()};
+    }
+    output << content;
+    output.flush();
+    if (!output.good()) {
+      std::error_code ignored;
+      std::filesystem::remove(temp_path, ignored);
+      return {.ok = false, .content = "Failed to write temp file: " + temp_path.string()};
+    }
+  }
+
+  std::error_code rename_error;
+  std::filesystem::rename(temp_path, path, rename_error);
+  if (rename_error) {
+    std::error_code ignored;
+    std::filesystem::remove(temp_path, ignored);
+    return {.ok = false, .content = "Failed to atomically replace file: " + rename_error.message()};
+  }
+  return {.ok = true, .content = "Edited file: " + path.string()};
+}
+
+}  // namespace
 
 std::string EditTool::name() const {
   return "edit";
@@ -45,16 +85,7 @@ ToolResult EditTool::execute(const std::string& args_json, const std::string& cw
     }
     content.replace(first, old_string.size(), new_string);
 
-    std::ofstream output(path);
-    if (!output.is_open()) {
-      return {.ok = false, .content = "Unable to open file for writing: " + path.string()};
-    }
-    output << content;
-    output.flush();
-    if (!output.good()) {
-      return {.ok = false, .content = "Failed to write file: " + path.string()};
-    }
-    return {.ok = true, .content = "Edited file: " + path.string()};
+    return write_file_atomic(path, content);
   } catch (const std::exception& ex) {
     return {.ok = false, .content = ex.what()};
   }

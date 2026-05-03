@@ -50,7 +50,7 @@ Assessment of problems that diverge from robust behavior or from the TypeScript 
 
 **Was: Low** — disk full / permission errors could leave `ToolResult::ok == true`.
 
-**Status: Resolved.** `edit_tool.cpp` checks that the output stream opens, then verifies `good()` after `flush()`.
+**Status: Resolved.** `edit_tool.cpp` now writes to a temp file in the same directory, validates stream state, and atomically replaces the destination via `rename()`.
 
 ---
 

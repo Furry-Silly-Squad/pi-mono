@@ -98,6 +98,14 @@ add_executable(coding-agent-compaction-carry-forward-test test/compaction_carry_
 target_include_directories(coding-agent-compaction-carry-forward-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(coding-agent-compaction-carry-forward-test PRIVATE nlohmann_json::nlohmann_json)
 
+add_executable(coding-agent-edit-tool-test test/edit_tool_test.cpp src/tools/edit_tool.cpp)
+target_include_directories(coding-agent-edit-tool-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-edit-tool-test PRIVATE nlohmann_json::nlohmann_json)
+
+add_executable(coding-agent-bash-destructive-test test/bash_destructive_test.cpp src/tools/bash_destructive.cpp)
+target_include_directories(coding-agent-bash-destructive-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-bash-destructive-test PRIVATE nlohmann_json::nlohmann_json)
+
 # AgentSession integration test (Phase 7). Pulls in the full runtime except provider/main.
 add_executable(coding-agent-agent-session-test
   test/agent_session_test.cpp
@@ -126,6 +134,8 @@ add_test(NAME coding-agent-branch-summary COMMAND coding-agent-branch-summary-te
 add_test(NAME coding-agent-session-store COMMAND coding-agent-session-store-test)
 add_test(NAME coding-agent-branch-traversal COMMAND coding-agent-branch-traversal-test)
 add_test(NAME coding-agent-compaction-carry-forward COMMAND coding-agent-compaction-carry-forward-test)
+add_test(NAME coding-agent-edit-tool COMMAND coding-agent-edit-tool-test)
+add_test(NAME coding-agent-bash-destructive COMMAND coding-agent-bash-destructive-test)
 add_test(NAME coding-agent-agent-session COMMAND coding-agent-agent-session-test)
 
 # Phase 9 queue/retry tests

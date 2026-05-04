@@ -27,6 +27,99 @@
 
 namespace coding_agent {
 
+// ============================================================================
+// Decomposition JSON Parsing
+// ============================================================================
+
+std::optional<DecompositionResult> parseDecompositionJson(
+    const std::string& jsonStr,
+    std::string& error
+) {
+    try {
+        nlohmann::json j = nlohmann::json::parse(jsonStr, nullptr, false);
+        if (j.is_discarded()) {
+            error = "Decomposition response is not valid JSON";
+            return std::nullopt;
+        }
+
+        // Handle both formats:
+        // 1. Nested: { "decomposition": { "description": ..., "subtasks": [...] } }
+        // 2. Flat:   { "description": ..., "subtasks": [...] }
+        nlohmann::json subtasksJson;
+        std::string description;
+
+        if (j.contains("decomposition") && j["decomposition"].is_object()) {
+            const auto& decomp = j["decomposition"];
+            if (!decomp.contains("subtasks") || !decomp["subtasks"].is_array()) {
+                error = "Decomposition response missing 'subtasks' array in 'decomposition'";
+                return std::nullopt;
+            }
+            subtasksJson = decomp["subtasks"];
+            description = decomp.value("description", "Task decomposition");
+        } else if (j.contains("subtasks") && j["subtasks"].is_array()) {
+            subtasksJson = j["subtasks"];
+            description = j.value("description", "Task decomposition");
+        } else {
+            error = "Decomposition response missing 'subtasks' array";
+            return std::nullopt;
+        }
+
+        DecompositionResult result;
+        result.description = description;
+
+        // Extract subtasks with all fields
+        for (const auto& st : subtasksJson) {
+            if (!st.is_object()) {
+                continue;  // Skip non-object elements (e.g., strings, numbers, nulls)
+            }
+
+            SubTask task;
+            task.id = st.value("id", std::to_string(result.subtasks.size() + 1));
+            task.description = st.value("description", "");
+
+            if (st.contains("context_files") && st["context_files"].is_array()) {
+                for (const auto& cf : st["context_files"]) {
+                    if (cf.is_string()) {
+                        task.contextFiles.push_back(cf.get<std::string>());
+                    }
+                }
+            }
+
+            if (st.contains("expected_artifacts") && st["expected_artifacts"].is_array()) {
+                for (const auto& ea : st["expected_artifacts"]) {
+                    if (ea.is_string()) {
+                        task.expectedArtifacts.push_back(ea.get<std::string>());
+                    }
+                }
+            }
+
+            if (st.contains("dependencies") && st["dependencies"].is_array()) {
+                for (const auto& dep : st["dependencies"]) {
+                    if (dep.is_string()) {
+                        task.dependencies.push_back(dep.get<std::string>());
+                    }
+                }
+            }
+
+            if (st.contains("server") && st["server"].is_string()) {
+                task.server = st["server"].get<std::string>();
+            }
+
+            task.priority = st.value("priority", static_cast<int>(result.subtasks.size() + 1));
+
+            if (!task.description.empty()) {
+                result.subtasks.push_back(std::move(task));
+            }
+        }
+
+        return result;
+
+    } catch (const std::exception& ex) {
+        error = std::string("Failed to parse decomposition JSON: ") + ex.what();
+        return std::nullopt;
+    }
+}
+
 namespace fs = std::filesystem;
 
 // ============================================================================

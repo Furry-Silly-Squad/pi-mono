@@ -29,6 +29,12 @@ struct SubTask {
     std::string server;  // Optional server ID for routing (empty = use parent's server)
 };
 
+/// Represents the parsed result of a decomposition JSON response.
+struct DecompositionResult {
+    std::string description;
+    std::vector<SubTask> subtasks;
+};
+
 /// Validate that the subtask dependency graph is a valid DAG (no cycles).
 /// Returns nullopt if valid, or an error message describing the issue.
 std::optional<std::string> validateSubtaskDag(const std::vector<SubTask>& subtasks);
@@ -36,6 +42,18 @@ std::optional<std::string> validateSubtaskDag(const std::vector<SubTask>& subtas
 /// Compute a topological execution order for the subtasks based on their dependencies.
 /// Returns an ordered list of subtask IDs. Returns nullopt if the graph is invalid.
 std::optional<std::vector<std::string>> topologicalSortSubtasks(const std::vector<SubTask>& subtasks);
+
+/// Parse a decomposition JSON response from the LLM.
+/// Handles both nested `{ "decomposition": { "description", "subtasks" } }`
+/// and flat `{ "description", "subtasks" }` formats.
+///
+/// @param jsonStr The raw JSON string from the LLM response.
+/// @param error On failure, populated with a human-readable error message.
+/// @return DecompositionResult on success, std::nullopt on failure.
+std::optional<DecompositionResult> parseDecompositionJson(
+    const std::string& jsonStr,
+    std::string& error
+);
 
 /// Spawned sub-agent process manager.
 class SubAgent {

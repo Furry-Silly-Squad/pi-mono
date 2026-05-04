@@ -188,3 +188,10 @@ target_include_directories(coding-agent-server-config-test PRIVATE "${CMAKE_CURR
 target_link_libraries(coding-agent-server-config-test PRIVATE nlohmann_json::nlohmann_json)
 
 add_test(NAME coding-agent-server-config COMMAND coding-agent-server-config-test)
+
+# Decomposition JSON parsing tests (Phase 11)
+add_executable(coding-agent-decomposition-test test/decomposition_parse_test.cpp src/subagent.cpp src/gpu_semaphore.cpp)
+target_include_directories(coding-agent-decomposition-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-decomposition-test PRIVATE nlohmann_json::nlohmann_json)
+
+add_test(NAME coding-agent-decomposition COMMAND coding-agent-decomposition-test)

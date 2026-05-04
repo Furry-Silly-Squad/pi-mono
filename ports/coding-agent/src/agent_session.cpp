@@ -1510,80 +1510,39 @@ bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
         return false;
     }
 
-    // Parse JSON response
-    try {
-        nlohmann::json j = nlohmann::json::parse(response.content, nullptr, false);
-        if (j.is_discarded()) {
-            error = "Decomposition response is not valid JSON";
-            return false;
-        }
-
-        // Handle both formats:
-        // 1. Nested: { "decomposition": { "description": ..., "subtasks": [...] } }
-        // 2. Flat:   { "description": ..., "subtasks": [...] }
-        nlohmann::json subtasksJson;
-        std::string description;
-
-        if (j.contains("decomposition") && j["decomposition"].is_object()) {
-            const auto& decomp = j["decomposition"];
-            if (!decomp.contains("subtasks") || !decomp["subtasks"].is_array()) {
-                error = "Decomposition response missing 'subtasks' array in 'decomposition'";
-                return false;
-            }
-            subtasksJson = decomp["subtasks"];
-            description = decomp.value("description", "Task decomposition");
-        } else if (j.contains("subtasks") && j["subtasks"].is_array()) {
-            subtasksJson = j["subtasks"];
-            description = j.value("description", "Task decomposition");
-        } else {
-            error = "Decomposition response missing 'subtasks' array";
-            return false;
-        }
-
-        // Store decomposition entry in session
-        session_->appendSubTaskDecompositionEntry(description, subtasksJson);
-
-        // Extract subtasks with all fields
-        for (const auto& st : subtasksJson) {
-            SubTask task;
-            task.id = st.value("id", std::to_string(subtasks.size() + 1));
-            task.description = st.value("description", "");
-
-            if (st.contains("context_files") && st["context_files"].is_array()) {
-                for (const auto& cf : st["context_files"]) {
-                    task.contextFiles.push_back(cf.get<std::string>());
-                }
-            }
-
-            if (st.contains("expected_artifacts") && st["expected_artifacts"].is_array()) {
-                for (const auto& ea : st["expected_artifacts"]) {
-                    task.expectedArtifacts.push_back(ea.get<std::string>());
-                }
-            }
-
-            if (st.contains("dependencies") && st["dependencies"].is_array()) {
-                for (const auto& dep : st["dependencies"]) {
-                    task.dependencies.push_back(dep.get<std::string>());
-                }
-            }
-
-            if (st.contains("server") && st["server"].is_string()) {
-                task.server = st["server"].get<std::string>();
-            }
-
-            task.priority = st.value("priority", static_cast<int>(subtasks.size() + 1));
-
-            if (!task.description.empty()) {
-                subtasks.push_back(std::move(task));
-            }
-        }
-
-        return !subtasks.empty();
-
-    } catch (const std::exception& ex) {
-        error = std::string("Failed to parse decomposition JSON: ") + ex.what();
+    // Parse JSON response using the extracted helper
+    std::string parseError;
+    auto decompResult = parseDecompositionJson(response.content, parseError);
+    if (!decompResult.has_value()) {
+        error = parseError;
         return false;
     }
+
+    // Store decomposition entry in session
+    nlohmann::json subtasksJson = nlohmann::json::array();
+    for (const auto& task : decompResult->subtasks) {
+        nlohmann::json st;
+        st["id"] = task.id;
+        st["description"] = task.description;
+        if (!task.contextFiles.empty()) {
+            st["context_files"] = task.contextFiles;
+        }
+        if (!task.expectedArtifacts.empty()) {
+            st["expected_artifacts"] = task.expectedArtifacts;
+        }
+        if (!task.dependencies.empty()) {
+            st["dependencies"] = task.dependencies;
+        }
+        if (!task.server.empty()) {
+            st["server"] = task.server;
+        }
+        st["priority"] = task.priority;
+        subtasksJson.push_back(st);
+    }
+    session_->appendSubTaskDecompositionEntry(decompResult->description, subtasksJson);
+
+    subtasks = std::move(decompResult->subtasks);
+    return !subtasks.empty();
 }
 
 bool AgentSession::executeSubtasks(const std::vector<SubTask>& subtasks,

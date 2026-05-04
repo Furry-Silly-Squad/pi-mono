@@ -178,6 +178,38 @@ using SessionEntry = std::variant<
 
 Both entry types serialize to JSONL with their respective fields. The `subtask_decomposition` entry stores the full LLM output for debugging and replay. The `subtask` entries track runtime state.
 
+## Server Connectivity
+
+Sub-agents need to know which llama-cpp server to connect to. A server configuration module holds connectivity options that can be resolved at spawn time.
+
+### Server Resolution
+
+The main agent's llama-cpp connection details (host, port, model) are the default server configuration. A `ServerConfig` struct captures these options:
+
+```cpp
+struct ServerConfig {
+  std::string baseUrl;       // e.g. "http://127.0.0.1:8080"
+  std::string modelId;       // model used by parent
+  std::string apiKey;        // if required
+  std::vector<std::string> contextFiles;
+};
+```
+
+### Default Behavior (Single Server)
+
+When the llama-cpp provider has exactly **one server** in its servers list, or when no additional server resources are specified, the sub-agent uses **the same server** as the parent agent. The `ServerConfig` is inherited directly from the parent's connection:
+
+- `baseUrl` — same as parent
+- `modelId` — same as parent
+- `apiKey` — same as parent
+- `contextFiles` — copied from parent's session context
+
+This means that in the common single-server case, the sub-agent invocation is nearly identical to running the agent in interactive mode (same binary, same model, same server), but with the added benefit of decomposition: the parent orchestrates multiple focused subtasks instead of one monolithic request.
+
+### Multi-Server (Future)
+
+When multiple servers are configured, the parent can route subtasks to different servers by specifying a `server` field in the subtask decomposition JSON. This is out of scope for Phase 11 but the `ServerConfig` module is designed to support it.
+
 ## Sub-Agent Spawn Logic
 
 ### Process Spawning

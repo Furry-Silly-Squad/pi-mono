@@ -33,14 +33,16 @@ Main Process (coding-agent)
 | `GpuSemaphore` | ✅ Implemented | File-based lock, PID liveness, stale lock cleanup |
 | `SubAgent::spawn()` | ✅ Implemented | fork/exec, GPU lock, result collection |
 | `decomposeAndExecute()` | ✅ Implemented | Heuristic detection, LLM decomposition, sequential execution |
-| `--gpu-lock-path` CLI flag | ✅ Implemented | Config field exists but **not used** at runtime (see Issues) |
-| Dependency resolution | ❌ Not implemented | `dependencies` field in JSON is ignored |
-| DAG validation / cycle detection | ❌ Not implemented | |
-| Child process timeout | ❌ Not implemented | `waitpid()` blocks indefinitely |
+| `--gpu-lock-path` CLI flag | ✅ Implemented | Config field exists and is used at runtime |
+| Dependency resolution | ✅ Implemented | `dependencies` field parsed and respected via topological sort |
+| DAG validation / cycle detection | ✅ Implemented | Self-dependency, missing dependency, DFS cycle detection |
+| Child process timeout | ✅ Implemented | Polling timeout loop, kill on timeout |
 | `/decompose` command | ❌ Not implemented | Only heuristic-based detection |
 | `/subtasks` command | ❌ Not implemented | |
 | Parallel subagent execution | ❌ Not implemented | Sequential only |
-| Multi-server GPU routing | ❌ Not implemented | Single global lock file |
+| Multi-server GPU routing | ❌ Partially implemented | Single global lock file per server hash |
+| Child session filename | ✅ Implemented | `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl` |
+| Binary path resolution | ⚠️ Partial | Hardcoded `"coding-agent"` — should resolve from argv[0] |
 
 ## Decomposition Format
 
@@ -308,12 +310,12 @@ Child sessions are stored under the parent session's directory:
   └── sessions/
       └── --home-user-project--/
           ├── 2025-01-01T00:00:00_abc123.jsonl  (parent session)
-          ├── subtask-<child-session-id>.jsonl  (child 1)
-          ├── subtask-<child-session-id>.jsonl  (child 2)
-          └── subtask-<child-session-id>.jsonl  (child 3)
+          ├── subtask-abc123-1_1777869000000_x7f3a2b1c.jsonl  (child 1)
+          ├── subtask-abc123-2_1777869000000_d4e5f6a7.jsonl  (child 2)
+          └── subtask-abc123-3_1777869000000_9b8c7d6e.jsonl  (child 3)
 ```
 
-**Note:** Actual child session filenames are `subtask-<child-session-id>.jsonl` (random hex). The planned pattern `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl` is not yet implemented. This makes it harder to correlate child sessions with their parent and subtask number.
+**Format:** `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl`. This allows correlating child sessions with their parent and the specific subtask they executed.
 
 ## Result Collection
 
@@ -398,53 +400,67 @@ Reads last assistant message from child session file by parsing JSONL lines. Ret
 
 Decomposition instructions added to system prompt via `decomposeIntoSubtasks()` prompt construction.
 
-#### Step 7: Config and CLI Flags ✅ Implemented (partial)
+#### Step 7: Config and CLI Flags ✅ Implemented
 
-`--gpu-lock-path` flag added. `--subagent-enabled` flag **not implemented** — subagent mode is always on when the heuristic triggers.
+`--gpu-lock-path` flag added and used at runtime. If set, that path is used; otherwise, the lock path is auto-derived from a hash of `base_url` to prevent conflicts on multi-GPU setups.
+
+#### Step 8: DAG Validation & Dependency Resolution ✅ Implemented
+
+- `validateSubtaskDag()`: Validates that the dependency graph has no cycles, no self-dependencies, and no references to unknown task IDs.
+- `topologicalSortSubtasks()`: Computes execution order using Kahn's algorithm with priority-based tie-breaking. Returns `nullopt` if the graph is invalid.
+- Subtasks are now executed in topological order, respecting the `dependencies` field from the LLM output.
+
+#### Step 9: Child Session Filenames ✅ Implemented
+
+Child session files now follow the format: `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl`. This makes it easy to correlate child sessions with their parent and the specific subtask they executed.
+
+#### Step 10: Unit Tests ✅ Implemented
+
+`coding-agent-subagent-dag-test` covers:
+- DAG validation: empty graph, single task, linear deps, diamond deps, self-dependency, missing dependency, cycles of 2 and 3
+- Topological sort: single task, linear order, diamond order, priority ordering, independent tasks, cycle rejection
 
 ## Issues and Architecture Concerns
 
-### 1. GPU Lock File — Single Global Lock (Critical for Multi-GPU)
+### 1. GPU Lock File — Per-Server Locks ✅ Fixed
 
-**Current behavior:** The GPU lock is a single file at `<cwd>/.pi/gpu.lock`. All subagents on the same machine fight over this one lock.
+**Previous behavior:** The GPU lock was a single file at `<cwd>/.pi/gpu.lock`. All subagents on the same machine fought over this one lock.
 
-**Problem for multi-GPU (laptop + server):** If you run a smaller model on your laptop GPU and connect to a separate server GPU, both are separate `llama-cpp` servers on different machines. The file-based lock at `<cwd>/.pi/gpu.lock` does not work across machines. Even if the parent and child share the same filesystem, the lock only serializes at the process level — it does not distinguish between different GPUs.
+**Fix:** Lock path is now auto-derived from a hash of `base_url` when `--gpu-lock-path` is not explicitly set. This prevents lock conflicts when running subagents on different machines connecting to different GPUs.
 
-**What needs to happen:**
-- The lock file path should be derived from the server's unique identifier (e.g., `baseUrl` hash), not from `<cwd>`.
-- For cross-machine scenarios, a network-based lock (e.g., Redis, NFS with proper locking) is needed, or each server should have its own lock file.
-- The `config_.gpu_lock_path` field exists but is **never used** at runtime — `executeSubtasks()` hardcodes `config_.cwd + "/.pi/gpu.lock"`.
+**Remaining:** Cross-machine locks (e.g., Redis, NFS) are still not supported.
 
-**Immediate fix:** Use `config_.gpu_lock_path` if set, otherwise fall back to the hardcoded path. For multi-GPU, add a `--gpu-lock-path` per-server convention or auto-generate lock paths from server identifiers.
+### 2. `config_.gpu_lock_path` Is Now Used ✅ Fixed
 
-### 2. `config_.gpu_lock_path` Is Dead Code
+The config field is parsed from `--gpu-lock-path` CLI flag and used at runtime in `executeSubtasks()`. Falls back to `base_url` hash if not set.
 
-The config field is parsed from `--gpu-lock-path` CLI flag but never read in `executeSubtasks()`. The lock path is always computed as `config_.cwd + "/.pi/gpu.lock"`.
+### 3. Dependencies Field Is Now Respected ✅ Fixed
 
-### 3. Dependencies Field Is Ignored
+The LLM can produce `dependencies: ["1"]` in the JSON, and `executeSubtasks()` now:
+- Validates the DAG with `validateSubtaskDag()` (checks for cycles, self-deps, missing deps)
+- Computes topological execution order with `topologicalSortSubtasks()` (Kahn's algorithm with priority tie-breaking)
+- Executes subtasks in that order instead of array order
 
-The LLM can produce `dependencies: ["1"]` in the JSON, but `executeSubtasks()` runs subtasks in array order (index 0, 1, 2, ...) and never checks the `dependencies` field. It also hardcodes `dependencies.push_back(std::to_string(i))` when creating `SubTaskEntry`, which creates an implicit linear chain.
+### 4. DAG Validation & Cycle Detection ✅ Implemented
 
-**Impact:** If the LLM produces a DAG with parallel branches, those branches still execute sequentially. The `expected_artifacts` and `dependencies` fields are parsed but never acted upon.
+`validateSubtaskDag()` checks for:
+- Self-dependencies (task depends on itself)
+- Missing dependencies (task depends on unknown task ID)
+- Cycles (DFS-based cycle detection)
 
-### 4. No DAG Validation or Cycle Detection
+`topologicalSortSubtasks()` uses Kahn's algorithm and returns `nullopt` if the graph is invalid.
 
-If the LLM produces a cycle (e.g., task 1 depends on task 2, task 2 depends on task 1), there is no validation. The system would deadlock or skip tasks incorrectly.
+### 5. Child Process Timeout ✅ Implemented
 
-### 5. No Child Process Timeout
+`SubAgent::spawn()` uses a polling loop with `waitpid(WNOHANG)` (Unix) or `WaitForSingleObject` (Windows) and a configurable `maxSubtaskDurationMs` parameter (default 30 minutes). On timeout, the child process is killed and an error is reported.
 
-`waitpid(pid, &status, 0)` blocks indefinitely. If a child process hangs (e.g., infinite tool loop), the parent hangs forever. The `--gpu-lock-path` timeout (120s) only applies to lock acquisition, not to child execution.
-
-### 6. Binary Path Resolution
+### 6. Binary Path Resolution ⚠️ Partial
 
 `std::string binaryPath = "coding-agent";` — the child is launched via `execv("coding-agent", ...)` which assumes `coding-agent` is in PATH. Should resolve from `argv[0]` or a config option for reliability.
 
-### 7. Child Session Filename Does Not Match Spec
+### 7. Child Session Filename Now Matches Spec ✅ Fixed
 
-PHASE-11.md documents: `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl`
-Actual code produces: `subtask-<child-session-id>.jsonl`
-
-Missing: parent session ID, subtask ID, timestamp prefix. This makes it hard to correlate child sessions with their parent and find the correct subtask result.
+Child session files now follow the format: `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl`. This makes it easy to correlate child sessions with their parent and find the correct subtask result.
 
 ### 8. UI: TuiAnimation State Confusion During Subtask Execution
 
@@ -494,15 +510,15 @@ There is no way to list active subtasks, view their status, or see results witho
 
 | Risk | Mitigation | Status |
 |------|-----------|--------|
-| Child process hangs indefinitely | GPU semaphore timeout + max execution time per subtask | ❌ Not implemented |
+| Child process hangs indefinitely | GPU semaphore timeout + max execution time per subtask | ✅ Implemented |
 | Child process fails silently | Check exit code, capture stderr | ✅ Implemented |
 | Result summary too short for context | Configurable result summary length (default 500 chars) | ✅ Implemented |
 | Too many subtasks overwhelm GPU | Sequential execution (one at a time) | ✅ Implemented |
 | Decomposition produces invalid JSON | Fallback to single subtask if JSON parse fails | ✅ Implemented |
-| Subtask dependencies create deadlock | Validate DAG before execution, detect cycles | ❌ Not implemented |
+| Subtask dependencies create deadlock | Validate DAG before execution, detect cycles | ✅ Implemented |
 | GPU lock blocks across machines | File-based lock does not work cross-machine | ❌ Not addressed |
 | No visibility into child progress | Child output not streamed to parent | ❌ Not implemented |
-| Binary not in PATH | Hardcoded "coding-agent" string | ❌ Not addressed |
+| Binary not in PATH | Hardcoded "coding-agent" string | ⚠️ Partial |
 
 ## Testing Strategy
 

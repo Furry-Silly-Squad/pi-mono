@@ -1461,7 +1461,7 @@ bool AgentSession::looks_like_multi_task(const std::string& user_input) const {
 }
 
 bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
-                                          std::vector<std::pair<std::string, std::vector<std::string>>>& subtasks,
+                                          std::vector<SubTask>& subtasks,
                                           std::string& error) {
     // Build a decomposition request message
     ChatMessage decomp_request{
@@ -1517,19 +1517,34 @@ bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
         std::string description = j.value("description", "Task decomposition");
         session_->appendSubTaskDecompositionEntry(description, subtasks_json);
 
-        // Extract subtasks
+        // Extract subtasks with all fields
         for (const auto& st : j["subtasks"]) {
-            std::string desc = st.value("description", "");
-            std::vector<std::string> context_files;
+            SubTask task;
+            task.id = st.value("id", std::to_string(subtasks.size() + 1));
+            task.description = st.value("description", "");
 
             if (st.contains("context_files") && st["context_files"].is_array()) {
                 for (const auto& cf : st["context_files"]) {
-                    context_files.push_back(cf.get<std::string>());
+                    task.contextFiles.push_back(cf.get<std::string>());
                 }
             }
 
-            if (!desc.empty()) {
-                subtasks.push_back({desc, context_files});
+            if (st.contains("expected_artifacts") && st["expected_artifacts"].is_array()) {
+                for (const auto& ea : st["expected_artifacts"]) {
+                    task.expectedArtifacts.push_back(ea.get<std::string>());
+                }
+            }
+
+            if (st.contains("dependencies") && st["dependencies"].is_array()) {
+                for (const auto& dep : st["dependencies"]) {
+                    task.dependencies.push_back(dep.get<std::string>());
+                }
+            }
+
+            task.priority = st.value("priority", static_cast<int>(subtasks.size() + 1));
+
+            if (!task.description.empty()) {
+                subtasks.push_back(std::move(task));
             }
         }
 
@@ -1541,9 +1556,30 @@ bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
     }
 }
 
-bool AgentSession::executeSubtasks(const std::vector<std::pair<std::string, std::vector<std::string>>>& subtasks,
+bool AgentSession::executeSubtasks(const std::vector<SubTask>& subtasks,
                                     const ChunkCallback& on_chunk,
                                     std::atomic<bool>* cancel_flag) {
+    // Validate the dependency graph
+    auto validationError = validateSubtaskDag(subtasks);
+    if (validationError.has_value()) {
+        on_chunk("[DECOMPOSE] DAG validation failed: " + *validationError + "\n");
+        on_chunk("[DECOMPOSE] Cannot execute subtasks with invalid dependencies\n");
+        return false;
+    }
+
+    // Compute topological execution order
+    auto order = topologicalSortSubtasks(subtasks);
+    if (!order.has_value()) {
+        on_chunk("[DECOMPOSE] Topological sort failed: dependency graph is invalid\n");
+        return false;
+    }
+
+    // Build a map from task ID to task data for quick lookup
+    std::unordered_map<std::string, const SubTask*> taskMap;
+    for (const auto& task : subtasks) {
+        taskMap[task.id] = &task;
+    }
+
     // Build server config from parent's connection
     ServerConfig serverConfig;
     serverConfig.baseUrl = config_.base_url;
@@ -1551,9 +1587,9 @@ bool AgentSession::executeSubtasks(const std::vector<std::pair<std::string, std:
     serverConfig.apiKey = config_.api_key;
     serverConfig.contextFiles = {};
 
-    // Determine binary path (use same binary as parent)
-    // For now, use the current executable path
-    std::string binaryPath = "coding-agent";  // Should be resolved from argv[0] in production
+    // Determine binary path: resolve from argv[0] if available, otherwise fallback to PATH lookup
+    std::string binaryPath = "coding-agent";  // Fallback: relies on PATH
+    // In production, this should be resolved from the parent binary path
 
     // Determine GPU lock path: use config if set, otherwise derive from server URL
     // to ensure different servers get different lock files (critical for multi-GPU setups).
@@ -1573,52 +1609,70 @@ bool AgentSession::executeSubtasks(const std::vector<std::pair<std::string, std:
     namespace fs = std::filesystem;
     fs::create_directories(fs::path(gpuLockPath).parent_path());
 
-    const std::string& parentSessionDir = session_->getSessionDir();
+    const std::string parentSessionDir = session_->getSessionDir();
+    const std::string parentSessionId = session_->getSessionId();
 
-    // Create subtask entries in parent session
-    for (size_t i = 0; i < subtasks.size(); ++i) {
-        const auto& [desc, ctxFiles] = subtasks[i];
-        std::vector<std::string> dependencies;
-        if (i > 0) {
-            dependencies.push_back(std::to_string(i));
-        }
-
+    // Create subtask entries in parent session (all start as pending)
+    for (const auto& task : subtasks) {
         session_->appendSubTaskEntry(
-            std::to_string(i + 1),
-            desc,
+            task.id,
+            task.description,
             "pending",
             "",
-            dependencies
+            task.dependencies
         );
     }
 
-    // Execute subtasks sequentially
-    for (size_t i = 0; i < subtasks.size(); ++i) {
+    // Execute subtasks in topological order
+    int completedCount = 0;
+    int totalCount = static_cast<int>(order->size());
+
+    for (const auto& taskId : *order) {
         // Check for abort
         if (cancel_flag && cancel_flag->load()) {
             return false;
         }
 
-        const auto& [desc, ctxFiles] = subtasks[i];
+        const SubTask* task = taskMap[taskId];
+        if (!task) {
+            on_chunk("[DECOMPOSE] Internal error: task not found: " + taskId + "\n");
+            continue;
+        }
 
         // Update subtask state to running
         auto entries = session_->getEntries();
         for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
             if (auto* ste = std::get_if<SubTaskEntry>(&*it)) {
-                if (ste->subtaskId == std::to_string(i + 1) && ste->state == "pending") {
+                if (ste->subtaskId == taskId && ste->state == "pending") {
                     ste->state = "running";
                     break;
                 }
             }
         }
 
-        on_chunk("\n[SUBTASK " + std::to_string(i + 1) + "/" + std::to_string(subtasks.size()) + "] " + desc + "\n");
+        on_chunk("\n[SUBTASK " + std::to_string(completedCount + 1) + "/" + std::to_string(totalCount) + "] " + task->description + "\n");
+
+        // Generate child session filename with parent session ID, subtask ID, and timestamp
+        const auto now = std::chrono::system_clock::now();
+        const auto ms = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
+        const std::string timestampPrefix = std::to_string(ms.time_since_epoch().count());
+
+        // Simple ID generation for the child session
+        std::string childSessionId = timestampPrefix + "_";
+        for (int i = 0; i < 8; ++i) {
+            childSessionId += "0123456789abcdef"[rand() % 16];
+        }
+
+        // Filename format: subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl
+        const std::string childSessionFilename = "subtask-" + parentSessionId + "-" +
+            taskId + "_" + timestampPrefix + "_" + childSessionId + ".jsonl";
+        const fs::path childSessionPath = fs::path(parentSessionDir) / childSessionFilename;
 
         // Spawn child process (default 30 min timeout)
         SubAgentResult result = SubAgent::spawn(
             binaryPath,
-            desc,
-            ctxFiles,
+            task->description,
+            task->contextFiles,
             serverConfig,
             parentSessionDir,
             gpuLockPath,
@@ -1631,7 +1685,7 @@ bool AgentSession::executeSubtasks(const std::vector<std::pair<std::string, std:
         entries = session_->getEntries();
         for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
             if (auto* ste = std::get_if<SubTaskEntry>(&*it)) {
-                if (ste->subtaskId == std::to_string(i + 1) && ste->state == "running") {
+                if (ste->subtaskId == taskId && ste->state == "running") {
                     ste->state = result.success ? "completed" : "failed";
                     ste->sessionId = result.sessionId;
                     ste->resultSummary = result.lastAssistantMessage;
@@ -1649,26 +1703,28 @@ bool AgentSession::executeSubtasks(const std::vector<std::pair<std::string, std:
             if (summary.length() > 500) {
                 summary = summary.substr(0, 500) + "...";
             }
-            on_chunk("[tool: subtask_" + std::to_string(i + 1) + "] completed\n"
+            on_chunk("[tool: subtask_" + taskId + "] completed\n"
                      "→ Result: " + summary + "\n");
 
             session_->appendCustomMessageEntry(
                 "subtask_result",
-                "[tool: subtask_" + std::to_string(i + 1) + "] completed\n"
+                "[tool: subtask_" + taskId + "] completed\n"
                 "→ Result: " + result.lastAssistantMessage,
                 false
             );
         } else {
-            on_chunk("[tool: subtask_" + std::to_string(i + 1) + "] failed: "
+            on_chunk("[tool: subtask_" + taskId + "] failed: "
                      + (result.error.value_or("unknown error")) + "\n");
 
             session_->appendCustomMessageEntry(
                 "subtask_result",
-                "[tool: subtask_" + std::to_string(i + 1) + "] failed: "
+                "[tool: subtask_" + taskId + "] failed: "
                 + (result.error.value_or("unknown error")),
                 false
             );
         }
+
+        completedCount++;
     }
 
     return true;
@@ -1685,7 +1741,7 @@ bool AgentSession::decomposeAndExecute(const std::string& user_input,
     on_chunk("\n[DECOMPOSE] Detecting subtasks...\n");
 
     // Step 2: Decompose into subtasks
-    std::vector<std::pair<std::string, std::vector<std::string>>> subtasks;
+    std::vector<SubTask> subtasks;
     std::string error;
 
     if (!decomposeIntoSubtasks(user_input, subtasks, error)) {

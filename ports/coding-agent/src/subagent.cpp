@@ -9,6 +9,8 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "gpu_semaphore.hpp"
@@ -25,6 +27,141 @@
 namespace coding_agent {
 
 namespace fs = std::filesystem;
+
+// ============================================================================
+// DAG Validation & Topological Sort
+// ============================================================================
+
+std::optional<std::string> validateSubtaskDag(const std::vector<SubTask>& subtasks) {
+    // Build a set of all valid task IDs
+    std::unordered_set<std::string> validIds;
+    for (const auto& task : subtasks) {
+        validIds.insert(task.id);
+    }
+
+    // Check for self-dependencies and missing dependencies
+    for (const auto& task : subtasks) {
+        for (const auto& dep : task.dependencies) {
+            if (dep == task.id) {
+                return "Task '" + task.id + "' depends on itself";
+            }
+            if (validIds.find(dep) == validIds.end()) {
+                return "Task '" + task.id + "' depends on unknown task '" + dep + "'";
+            }
+        }
+    }
+
+    // Cycle detection using DFS with coloring:
+    // 0 = white (unvisited), 1 = gray (in progress), 2 = black (done)
+    std::unordered_map<std::string, int> color;
+    for (const auto& task : subtasks) {
+        color[task.id] = 0;
+    }
+
+    std::function<bool(const std::string&)> hasCycle = [&](const std::string& nodeId) -> bool {
+        color[nodeId] = 1;  // gray
+        for (const auto& task : subtasks) {
+            if (task.id == nodeId) {
+                for (const auto& dep : task.dependencies) {
+                    if (color[dep] == 1) {
+                        return true;  // back edge = cycle
+                    }
+                    if (color[dep] == 0 && hasCycle(dep)) {
+                        return true;
+                    }
+                }
+                break;
+            }
+        }
+        color[nodeId] = 2;  // black
+        return false;
+    };
+
+    for (const auto& task : subtasks) {
+        if (color[task.id] == 0 && hasCycle(task.id)) {
+            return "Dependency cycle detected involving task '" + task.id + "'";
+        }
+    }
+
+    return std::nullopt;  // valid DAG
+}
+
+std::optional<std::vector<std::string>> topologicalSortSubtasks(const std::vector<SubTask>& subtasks) {
+    // Build adjacency list and in-degree map
+    std::unordered_map<std::string, std::vector<std::string>> adj;  // dependency -> dependents
+    std::unordered_map<std::string, int> inDegree;
+
+    // Initialize all nodes
+    for (const auto& task : subtasks) {
+        if (inDegree.find(task.id) == inDegree.end()) {
+            inDegree[task.id] = 0;
+        }
+        for (const auto& dep : task.dependencies) {
+            adj[dep].push_back(task.id);
+            inDegree[task.id]++;
+        }
+    }
+
+    // Kahn's algorithm: start with nodes that have no dependencies
+    std::vector<std::string> result;
+    std::vector<std::string> queue;
+
+    for (const auto& [id, degree] : inDegree) {
+        if (degree == 0) {
+            queue.push_back(id);
+        }
+    }
+
+    // Sort queue by priority (lower priority number = higher priority = first)
+    auto priorityMap = [](const std::vector<SubTask>& tasks) -> std::unordered_map<std::string, int> {
+        std::unordered_map<std::string, int> pm;
+        for (const auto& t : tasks) {
+            pm[t.id] = t.priority;
+        }
+        return pm;
+    };
+
+    auto pm = priorityMap(subtasks);
+    std::sort(queue.begin(), queue.end(), [&](const std::string& a, const std::string& b) {
+        return pm[a] < pm[b];
+    });
+
+    size_t head = 0;
+    while (head < queue.size()) {
+        const std::string& node = queue[head++];
+        result.push_back(node);
+
+        // Collect neighbors and sort by priority
+        std::vector<std::string> neighbors;
+        if (adj.find(node) != adj.end()) {
+            neighbors = adj[node];
+        }
+
+        // Decrease in-degree and add to queue if zero
+        for (const auto& neighbor : neighbors) {
+            inDegree[neighbor]--;
+            if (inDegree[neighbor] == 0) {
+                queue.push_back(neighbor);
+            }
+        }
+
+        // Re-sort the remaining queue by priority
+        std::sort(queue.begin() + head, queue.end(), [&](const std::string& a, const std::string& b) {
+            return pm[a] < pm[b];
+        });
+    }
+
+    // If result doesn't contain all nodes, there's a cycle
+    if (result.size() != subtasks.size()) {
+        return std::nullopt;
+    }
+
+    return result;
+}
+
+// ============================================================================
+// SubAgent Implementation
+// ============================================================================
 
 SubAgentResult SubAgent::spawn(
     const std::string& binaryPath,

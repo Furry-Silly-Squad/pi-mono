@@ -2,7 +2,9 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <optional>
+#include <set>
 
 namespace coding_agent {
 
@@ -23,6 +25,24 @@ struct ServerConfig {
   std::string apiKey;        // if required
   std::vector<std::string> contextFiles;
 };
+
+/// A single subtask with all fields from the LLM decomposition.
+struct SubTask {
+    std::string id;
+    std::string description;
+    std::vector<std::string> contextFiles;
+    std::vector<std::string> expectedArtifacts;
+    std::vector<std::string> dependencies;  // IDs of prerequisite subtasks
+    int priority = 0;  // lower = higher priority
+};
+
+/// Validate that the subtask dependency graph is a valid DAG (no cycles).
+/// Returns nullopt if valid, or an error message describing the issue.
+std::optional<std::string> validateSubtaskDag(const std::vector<SubTask>& subtasks);
+
+/// Compute a topological execution order for the subtasks based on their dependencies.
+/// Returns an ordered list of subtask IDs. Returns nullopt if the graph is invalid.
+std::optional<std::vector<std::string>> topologicalSortSubtasks(const std::vector<SubTask>& subtasks);
 
 /// Spawned sub-agent process manager.
 class SubAgent {

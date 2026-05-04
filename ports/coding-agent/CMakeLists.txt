@@ -172,3 +172,10 @@ target_include_directories(coding-agent-agent-session-abort-test PRIVATE "${CMAK
 target_link_libraries(coding-agent-agent-session-abort-test PRIVATE nlohmann_json::nlohmann_json)
 
 add_test(NAME coding-agent-agent-session-abort COMMAND coding-agent-agent-session-abort-test)
+
+# DAG validation and topological sort tests (Phase 11)
+add_executable(coding-agent-subagent-dag-test test/subagent_dag_test.cpp src/subagent.cpp src/gpu_semaphore.cpp)
+target_include_directories(coding-agent-subagent-dag-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(coding-agent-subagent-dag-test PRIVATE nlohmann_json::nlohmann_json)
+
+add_test(NAME coding-agent-subagent-dag COMMAND coding-agent-subagent-dag-test)

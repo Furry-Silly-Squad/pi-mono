@@ -17,6 +17,7 @@
 #include "pending_message_queue.hpp"
 #include "providers/provider.hpp"
 #include "session_entry.hpp"
+#include "subagent.hpp"
 #include "tools/tool_registry.hpp"
 
 namespace coding_agent {
@@ -479,12 +480,13 @@ class AgentSession {
     /// Decompose a user request into subtasks via LLM call.
     /// Returns true if decomposition succeeded and subtasks were found.
     bool decomposeIntoSubtasks(const std::string& user_input,
-                               std::vector<std::pair<std::string, std::vector<std::string>>>& subtasks,
+                               std::vector<SubTask>& subtasks,
                                std::string& error);
 
     /// Execute all subtasks sequentially, collecting results.
     /// Spawns child coding-agent processes for each subtask.
-    bool executeSubtasks(const std::vector<std::pair<std::string, std::vector<std::string>>>& subtasks,
+    /// Subtasks are executed in topological order based on dependencies.
+    bool executeSubtasks(const std::vector<SubTask>& subtasks,
                          const ChunkCallback& on_chunk,
                          std::atomic<bool>* cancel_flag);
 

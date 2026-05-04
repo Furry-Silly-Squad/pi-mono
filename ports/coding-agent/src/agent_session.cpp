@@ -15,6 +15,7 @@
 #include "context_loader.hpp"
 #include "file_ops.hpp"
 #include "gpu_semaphore.hpp"
+#include "server_config.hpp"
 #include "session_entry.hpp"
 #include "subagent.hpp"
 #include "system_prompt.hpp"
@@ -1463,6 +1464,12 @@ bool AgentSession::looks_like_multi_task(const std::string& user_input) const {
 bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
                                           std::vector<SubTask>& subtasks,
                                           std::string& error) {
+    // Build server info section if available
+    std::string serverSection;
+    if (config_.serverConfigs.has_value()) {
+        serverSection = "\n\nAvailable servers:\n" + config_.serverConfigs.value().getPromptDescription();
+    }
+
     // Build a decomposition request message
     ChatMessage decomp_request{
         .role = "user",
@@ -1476,6 +1483,7 @@ bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
                    "      \"context_files\": [\"file1\"],\n"
                    "      \"expected_artifacts\": [\"output1\"],\n"
                    "      \"dependencies\": [],\n"
+                   "      \"server\": \"server-id\",  // Optional: server ID to run this subtask on (use parent's server if omitted)\n"
                    "      \"priority\": 1\n"
                    "    }\n"
                    "  ]\n"
@@ -1484,10 +1492,13 @@ bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
                    "- Each subtask should be self-contained and executable by a single coding-agent process\n"
                    "- Dependencies must form a DAG (no cycles)\n"
                    "- Priority is used for execution order (lower number = execute first)\n"
+                   "- Use the 'server' field to route subtasks to appropriate servers based on their requirements\n"
+                   "- Smaller, faster tasks can use local servers; larger, more complex tasks can use servers with larger context windows\n"
                    "- If the request is a single task, respond with a single subtask\n"
                    "- Context files are files the sub-agent should read before starting\n"
-                   "- Expected artifacts are files the sub-agent is expected to create or modify\n\n"
-                   "User request: " + user_input,
+                   "- Expected artifacts are files the sub-agent is expected to create or modify\n"
+                   "- Task descriptions should be detailed enough that the sub-agent understands what to do\n\n"
+                   "User request: " + user_input + serverSection,
     };
 
     ChatResponse response;
@@ -1541,6 +1552,10 @@ bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
                 }
             }
 
+            if (st.contains("server") && st["server"].is_string()) {
+                task.server = st["server"].get<std::string>();
+            }
+
             task.priority = st.value("priority", static_cast<int>(subtasks.size() + 1));
 
             if (!task.description.empty()) {
@@ -1580,34 +1595,27 @@ bool AgentSession::executeSubtasks(const std::vector<SubTask>& subtasks,
         taskMap[task.id] = &task;
     }
 
-    // Build server config from parent's connection
-    ServerConfig serverConfig;
-    serverConfig.baseUrl = config_.base_url;
-    serverConfig.modelId = current_model_;
-    serverConfig.apiKey = config_.api_key;
-    serverConfig.contextFiles = {};
-
     // Determine binary path: resolve from argv[0] if available, otherwise fallback to PATH lookup
     std::string binaryPath = "coding-agent";  // Fallback: relies on PATH
     // In production, this should be resolved from the parent binary path
 
     // Determine GPU lock path: use config if set, otherwise derive from server URL
     // to ensure different servers get different lock files (critical for multi-GPU setups).
-    std::string gpuLockPath;
-    if (!config_.gpu_lock_path.empty()) {
-        gpuLockPath = config_.gpu_lock_path;
-    } else {
+    auto getGpuLockPath = [&](const std::string& baseUrl) -> std::string {
+        if (!config_.gpu_lock_path.empty()) {
+            return config_.gpu_lock_path;
+        }
         // Derive a unique lock path per server by hashing the base URL.
-        // This prevents lock conflicts when running subagents on different machines
-        // connecting to different GPUs.
-        const std::string serverKey = config_.base_url.empty() ? "default" : config_.base_url;
+        const std::string serverKey = baseUrl.empty() ? "default" : baseUrl;
         std::hash<std::string> hasher;
         const size_t hash = hasher(serverKey);
         const std::string defaultDir = config_.cwd + "/.pi";
-        gpuLockPath = defaultDir + "/gpu-" + std::to_string(hash) + ".lock";
-    }
+        return defaultDir + "/gpu-" + std::to_string(hash) + ".lock";
+    };
+
     namespace fs = std::filesystem;
-    fs::create_directories(fs::path(gpuLockPath).parent_path());
+    // Ensure .pi directory exists
+    fs::create_directories(config_.cwd + "/.pi");
 
     const std::string parentSessionDir = session_->getSessionDir();
     const std::string parentSessionId = session_->getSessionId();
@@ -1639,6 +1647,37 @@ bool AgentSession::executeSubtasks(const std::vector<SubTask>& subtasks,
             continue;
         }
 
+        // Resolve server for this subtask
+        ServerConfig serverConfig;
+        if (!task->server.empty() && config_.serverConfigs.has_value()) {
+            // Try to find the specified server in the config
+            auto foundServer = config_.serverConfigs.value().findServer(task->server);
+            if (foundServer.has_value()) {
+                serverConfig.baseUrl = foundServer->baseUrl;
+                serverConfig.modelId = foundServer->modelId;
+                serverConfig.apiKey = foundServer->apiKey;
+                serverConfig.contextFiles = task->contextFiles;
+
+                on_chunk("[SUBTASK " + std::to_string(completedCount + 1) + "/" + std::to_string(totalCount) + "] " +
+                         task->description + " (server: " + task->server + ")\n");
+            } else {
+                on_chunk("[SUBTASK " + std::to_string(completedCount + 1) + "/" + std::to_string(totalCount) + "] " +
+                         task->description + " (server not found: " + task->server + ", using parent server)\n");
+                serverConfig.baseUrl = config_.base_url;
+                serverConfig.modelId = current_model_;
+                serverConfig.apiKey = config_.api_key;
+                serverConfig.contextFiles = task->contextFiles;
+            }
+        } else {
+            // Use parent's server configuration
+            serverConfig.baseUrl = config_.base_url;
+            serverConfig.modelId = current_model_;
+            serverConfig.apiKey = config_.api_key;
+            serverConfig.contextFiles = task->contextFiles;
+
+            on_chunk("\n[SUBTASK " + std::to_string(completedCount + 1) + "/" + std::to_string(totalCount) + "] " + task->description + "\n");
+        }
+
         // Update subtask state to running
         auto entries = session_->getEntries();
         for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
@@ -1649,8 +1688,6 @@ bool AgentSession::executeSubtasks(const std::vector<SubTask>& subtasks,
                 }
             }
         }
-
-        on_chunk("\n[SUBTASK " + std::to_string(completedCount + 1) + "/" + std::to_string(totalCount) + "] " + task->description + "\n");
 
         // Generate child session filename with parent session ID, subtask ID, and timestamp
         const auto now = std::chrono::system_clock::now();
@@ -1667,6 +1704,10 @@ bool AgentSession::executeSubtasks(const std::vector<SubTask>& subtasks,
         const std::string childSessionFilename = "subtask-" + parentSessionId + "-" +
             taskId + "_" + timestampPrefix + "_" + childSessionId + ".jsonl";
         const fs::path childSessionPath = fs::path(parentSessionDir) / childSessionFilename;
+
+        // Determine GPU lock path for the resolved server
+        std::string gpuLockPath = getGpuLockPath(serverConfig.baseUrl);
+        fs::create_directories(fs::path(gpuLockPath).parent_path());
 
         // Spawn child process (default 30 min timeout)
         SubAgentResult result = SubAgent::spawn(

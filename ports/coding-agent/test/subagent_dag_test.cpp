@@ -35,7 +35,7 @@ int main() {
     // Single task without dependencies is valid
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {}, 1},
+            {"1", "Task 1", {}, {}, {}, 1, ""},
         };
         auto error = validateSubtaskDag(subtasks);
         if (error.has_value()) {
@@ -46,9 +46,9 @@ int main() {
     // Linear dependencies are valid
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {}, 1},
-            {"2", "Task 2", {}, {}, {"1"}, 2},
-            {"3", "Task 3", {}, {}, {"2"}, 3},
+            {"1", "Task 1", {}, {}, {}, 1, ""},
+            {"2", "Task 2", {}, {}, {"1"}, 2, ""},
+            {"3", "Task 3", {}, {}, {"2"}, 3, ""},
         };
         auto error = validateSubtaskDag(subtasks);
         if (error.has_value()) {
@@ -59,10 +59,10 @@ int main() {
     // Diamond dependencies are valid
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {}, 1},
-            {"2", "Task 2", {}, {}, {"1"}, 2},
-            {"3", "Task 3", {}, {}, {"1"}, 3},
-            {"4", "Task 4", {}, {}, {"2", "3"}, 4},
+            {"1", "Task 1", {}, {}, {}, 1, ""},
+            {"2", "Task 2", {}, {}, {"1"}, 2, ""},
+            {"3", "Task 3", {}, {}, {"1"}, 3, ""},
+            {"4", "Task 4", {}, {}, {"2", "3"}, 4, ""},
         };
         auto error = validateSubtaskDag(subtasks);
         if (error.has_value()) {
@@ -73,7 +73,7 @@ int main() {
     // Self-dependency is invalid
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {"1"}, 1},
+            {"1", "Task 1", {}, {}, {"1"}, 1, ""},
         };
         auto error = validateSubtaskDag(subtasks);
         if (!error.has_value() || error->find("depends on itself") == std::string::npos) {
@@ -84,8 +84,8 @@ int main() {
     // Missing dependency is invalid
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {}, 1},
-            {"2", "Task 2", {}, {}, {"99"}, 2},
+            {"1", "Task 1", {}, {}, {}, 1, ""},
+            {"2", "Task 2", {}, {}, {"99"}, 2, ""},
         };
         auto error = validateSubtaskDag(subtasks);
         if (!error.has_value() || error->find("unknown task") == std::string::npos) {
@@ -96,8 +96,8 @@ int main() {
     // Cycle of two is invalid
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {"2"}, 1},
-            {"2", "Task 2", {}, {}, {"1"}, 2},
+            {"1", "Task 1", {}, {}, {"2"}, 1, ""},
+            {"2", "Task 2", {}, {}, {"1"}, 2, ""},
         };
         auto error = validateSubtaskDag(subtasks);
         if (!error.has_value() || error->find("cycle") == std::string::npos) {
@@ -108,9 +108,9 @@ int main() {
     // Cycle of three is invalid
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {"3"}, 1},
-            {"2", "Task 2", {}, {}, {"1"}, 2},
-            {"3", "Task 3", {}, {}, {"2"}, 3},
+            {"1", "Task 1", {}, {}, {"3"}, 1, ""},
+            {"2", "Task 2", {}, {}, {"1"}, 2, ""},
+            {"3", "Task 3", {}, {}, {"2"}, 3, ""},
         };
         auto error = validateSubtaskDag(subtasks);
         if (!error.has_value() || error->find("cycle") == std::string::npos) {
@@ -123,7 +123,7 @@ int main() {
     // Single task returns itself
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {}, 1},
+            {"1", "Task 1", {}, {}, {}, 1, ""},
         };
         auto order = topologicalSortSubtasks(subtasks);
         if (!order.has_value() || order->size() != 1 || (*order)[0] != "1") {
@@ -134,9 +134,9 @@ int main() {
     // Linear order is preserved
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {}, 1},
-            {"2", "Task 2", {}, {}, {"1"}, 2},
-            {"3", "Task 3", {}, {}, {"2"}, 3},
+            {"1", "Task 1", {}, {}, {}, 1, ""},
+            {"2", "Task 2", {}, {}, {"1"}, 2, ""},
+            {"3", "Task 3", {}, {}, {"2"}, 3, ""},
         };
         auto order = topologicalSortSubtasks(subtasks);
         if (!order.has_value() || order->size() != 3 ||
@@ -148,10 +148,10 @@ int main() {
     // Diamond order respects dependencies
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {}, 1},
-            {"2", "Task 2", {}, {}, {"1"}, 2},
-            {"3", "Task 3", {}, {}, {"1"}, 3},
-            {"4", "Task 4", {}, {}, {"2", "3"}, 4},
+            {"1", "Task 1", {}, {}, {}, 1, ""},
+            {"2", "Task 2", {}, {}, {"1"}, 2, ""},
+            {"3", "Task 3", {}, {}, {"1"}, 3, ""},
+            {"4", "Task 4", {}, {}, {"2", "3"}, 4, ""},
         };
         auto order = topologicalSortSubtasks(subtasks);
         if (!order.has_value() || order->size() != 4) {
@@ -169,9 +169,9 @@ int main() {
     // Priority ordering: lower priority number = higher priority
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {}, 1},
-            {"2", "Task 2", {}, {}, {"1"}, 3},
-            {"3", "Task 3", {}, {}, {"1"}, 2},
+            {"1", "Task 1", {}, {}, {}, 1, ""},
+            {"2", "Task 2", {}, {}, {"1"}, 3, ""},
+            {"3", "Task 3", {}, {}, {"1"}, 2, ""},
         };
         auto order = topologicalSortSubtasks(subtasks);
         if (!order.has_value() || order->size() != 3 || (*order)[0] != "1") {
@@ -187,9 +187,9 @@ int main() {
     // Independent tasks sorted by priority
     {
         std::vector<SubTask> subtasks{
-            {"3", "Task 3", {}, {}, {}, 3},
-            {"1", "Task 1", {}, {}, {}, 1},
-            {"2", "Task 2", {}, {}, {}, 2},
+            {"3", "Task 3", {}, {}, {}, 3, ""},
+            {"1", "Task 1", {}, {}, {}, 1, ""},
+            {"2", "Task 2", {}, {}, {}, 2, ""},
         };
         auto order = topologicalSortSubtasks(subtasks);
         if (!order.has_value() || order->size() != 3 ||
@@ -201,8 +201,8 @@ int main() {
     // Returns nullopt for cycles
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {"2"}, 1},
-            {"2", "Task 2", {}, {}, {"1"}, 2},
+            {"1", "Task 1", {}, {}, {"2"}, 1, ""},
+            {"2", "Task 2", {}, {}, {"1"}, 2, ""},
         };
         auto order = topologicalSortSubtasks(subtasks);
         if (order.has_value()) {
@@ -213,7 +213,7 @@ int main() {
     // Returns nullopt for self-dependency
     {
         std::vector<SubTask> subtasks{
-            {"1", "Task 1", {}, {}, {"1"}, 1},
+            {"1", "Task 1", {}, {}, {"1"}, 1, ""},
         };
         auto order = topologicalSortSubtasks(subtasks);
         if (order.has_value()) {

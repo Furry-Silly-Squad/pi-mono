@@ -2,9 +2,9 @@
 
 #include <string>
 #include <vector>
-#include <unordered_map>
 #include <optional>
-#include <set>
+
+#include "server_config.hpp"
 
 namespace coding_agent {
 
@@ -18,14 +18,6 @@ struct SubAgentResult {
   int exitCode = -1;
 };
 
-/// Server connectivity configuration for sub-agent processes.
-struct ServerConfig {
-  std::string baseUrl;       // e.g. "http://127.0.0.1:8080"
-  std::string modelId;       // model used by parent
-  std::string apiKey;        // if required
-  std::vector<std::string> contextFiles;
-};
-
 /// A single subtask with all fields from the LLM decomposition.
 struct SubTask {
     std::string id;
@@ -34,6 +26,7 @@ struct SubTask {
     std::vector<std::string> expectedArtifacts;
     std::vector<std::string> dependencies;  // IDs of prerequisite subtasks
     int priority = 0;  // lower = higher priority
+    std::string server;  // Optional server ID for routing (empty = use parent's server)
 };
 
 /// Validate that the subtask dependency graph is a valid DAG (no cycles).

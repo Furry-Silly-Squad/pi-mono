@@ -17,6 +17,7 @@
 #include "pending_message_queue.hpp"
 #include "providers/provider.hpp"
 #include "session_entry.hpp"
+#include "server_config.hpp"
 #include "subagent.hpp"
 #include "tools/tool_registry.hpp"
 
@@ -235,6 +236,9 @@ struct AgentSessionConfig {
     // Called before each provider call to resolve the API key.
     // Useful for OAuth / rotating tokens. If unset, uses `api_key` from config.
     std::function<std::string(const std::string& provider)> get_api_key;
+
+    /// Loaded server configurations for multi-server routing (optional).
+    std::optional<ServerConfigStore> serverConfigs;
 };
 
 // ============================================================================

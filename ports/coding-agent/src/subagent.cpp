@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "gpu_semaphore.hpp"
+#include "server_config.hpp"
 #include <nlohmann/json.hpp>
 
 #if defined(_WIN32) || defined(_WIN64)

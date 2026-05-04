@@ -1,120 +1,177 @@
-# C++ port vs `packages/agent` — analysis and roadmap
+# C++ port vs `packages/coding-agent` — analysis and roadmap
 
-Primary TypeScript reference for the agent loop: **`packages/agent/src`** (`agent-loop.ts`, `Agent`, types). Authoritative product semantics for tool execution are summarized in **`packages/agent/README.md`** (sections *With Tool Calls* and *Tools*). The C++ binary lives under **`ports/coding-agent`**.
+Primary TypeScript reference for the agent loop: **`packages/coding-agent/src/core/agent-session.ts`** (`AgentSession`, `AgentSessionRuntime`). The C++ binary lives under **`ports/coding-agent`**.
 
-## TypeScript (`packages/agent/src`)
+## Architecture
 
-- **`Agent`** — stateful wrapper: events, steering/follow-up queues, prompt/continue, abort lifecycle.
-- **`agent-loop.ts`** — `runAgentLoop`, streaming, tool execution (sequential + parallel with preflight/hooks).
-- **`proxy.ts`** — proxy stream for server-side LLM routing.
-- **`types.ts`** — core types.
+| Aspect | TS (`packages/coding-agent`) | C++ (`ports/coding-agent`) |
+|--------|------------------------------|---------------------------|
+| **Product boundary** | SDK library + CLI (embeddable) | Standalone CLI binary |
+| **Runtime** | Node.js / Bun | Native C++17 |
+| **Agent core** | `AgentSession` + `AgentSessionRuntime` (session lifecycle) | `AgentSession` (loop only) |
+| **Provider** | Multi-provider (`pi-ai` package) | Single provider (`llama-cpp`) |
+| **Session store** | JSONL with `SessionManager` | JSONL with `SessionManager` |
+| **Extension system** | Full plugin system | None |
+
+## TypeScript (`packages/coding-agent/src/core`)
+
+- **`AgentSession`** — stateful wrapper: events, steering/follow-up queues, prompt/continue, abort, compaction, retry, model/thinking management, branching, custom messages, bash execution, session export.
+- **`AgentSessionRuntime`** — session lifecycle: `switchSession`, `newSession`, `fork`, `importFromJsonl`, teardown/rebind pattern.
+- **`AgentSessionServices`** — cwd-bound service factory: auth, settings, model registry, resource loader.
+- **`extensions/`** — full plugin system: `ExtensionRunner`, core bindings, UI context, command system, resource discovery, hooks (`tool_call`, `tool_result`, `session_before_compact`, `session_before_tree`, `session_before_switch`, `session_before_fork`, `session_shutdown`, `session_start`, `input`, `resources_discover`).
+- **`tools/`** — built-in tools: bash, edit, find, grep, ls, read, write.
+- **`modes/`** — interactive (TUI with rich components), print, RPC (JSONL).
+- **`session-manager.ts`** — JSONL session store with tree traversal, branching, compaction/branch summary entries.
+- **`settings-manager.ts`** — persistent settings (model, thinking level, compaction, retry, shell config, themes).
+- **`model-registry.ts`** — dynamic model discovery, API key resolution, OAuth support.
+- **`auth-storage.ts`** — auth.json for API keys and OAuth tokens.
+- **`resource-loader.ts`** — skills, prompts, themes, extensions discovery.
 
 ## C++ (`ports/coding-agent/src`)
 
-- **`AgentSession`** — loop, tools, compaction, retry, session/branch handling, destructive-bash gating.
+- **`AgentSession`** — loop, tools, compaction, retry, session/branch handling, destructive-bash gating, custom messages, steering/follow-up queues.
 - **`agent.cpp`** — CLI, `Config` → `AgentSessionConfig`, print vs interactive.
-- Tools, **`Provider`**, session store, compaction, config parsing.
-
-## Recommendation: keep a separate program
-
-1. **Distribution** — TS library for embedding; C++ is a standalone CLI (different product boundary).
-2. **Feature mix** — C++ adds compaction, retry, sessions, branches; TS agent adds hooks, richer events, proxy, per-tool execution hints. Parity is incremental, not a line-for-line port.
-3. **No shared rewrite target** — C++ is an alternative runtime, not a drop-in replacement for the TS package.
-4. **Dependencies** — Separate build avoids cross-language coupling in `packages/agent`.
-
-## Tool execution: TypeScript semantics (`packages/agent/README.md`)
-
-These rules govern **when the runtime may run multiple tool calls from one assistant message concurrently** and how that interacts with configuration (not something the LLM “decides” in code; the model still proposes tool calls, the runtime chooses scheduling).
-
-| Mechanism | Behavior |
-|-----------|----------|
-| **Global `toolExecution`** | `"parallel"` (TS **default**) or `"sequential"`. Parallel: preflight each call in order, run allowed work concurrently, emit completion-related events as each tool finishes, but persist **`toolResult` / transcript order in assistant tool-call source order**. Sequential: one tool at a time, historical behavior. |
-| **Per-tool `executionMode`** on `AgentTool` | Optional. `"parallel"` — may run concurrently with other calls in the batch. `"sequential"` — **forces the entire batch** for that assistant turn to run **sequentially**, even if global `toolExecution` is `"parallel"`. If omitted, the global setting applies to that tool. |
-| **`beforeToolCall` / `afterToolCall`** | Preflight runs after args are validated; hooks can block or reshape results; `afterToolCall` can set `terminate` hints. Sequential preflight aligns extension and session state (see README *With Tool Calls*). |
-
-**Practical effect for parity:** tools that touch shared mutable state (filesystem, DB, process env) should be marked **`executionMode: "sequential"`** in TS so they never run in parallel with siblings in the same batch. Tools that are independent can stay default-parallel. C++ today has **no** per-tool signal, so the runtime cannot downgrade a batch when e.g. `read` + `write` + `bash` are requested together under global parallel.
-
-**Default mismatch:** TS defaults to **`toolExecution: "parallel"`**; C++ defaults to **`tool_execution_mode: "sequential"`**. Until per-tool modes exist, consider **`parallel`** as the global default in the port if the goal is closer scheduling parity with `@mariozechner/pi-agent-core` (tradeoff: higher concurrency pressure on tools that are not thread-safe).
+- **`interactive_mode.cpp`** — readline loop, `/rebuild`, `/stats`, `/compact`, `/thinking`, `/queues`, `/branch`, token budget display.
+- **`print_mode.cpp`** — single-prompt one-shot mode.
+- **`config.cpp`** — CLI arg parsing, `settings.json` support.
+- **`compaction.cpp`** — compaction logic (manual + auto).
+- **`session_entry.cpp`** — JSONL session store, tree traversal, branching, summary entries.
+- **`providers/llama_cpp_provider.cpp`** — llama.cpp HTTP API provider.
+- **`tools/`** — built-in tools: bash, edit, find, grep, ls, read, write. Each with `ToolExecutionMode` (sequential/parallel).
+- **`branch_summary.cpp`** — LLM-based branch summarization.
 
 ## Parity status (snapshot)
 
-| Area | TS (`packages/agent`) | C++ port |
-|------|-------------------------|----------|
+| Area | TS (`packages/coding-agent`) | C++ port |
+|------|------------------------------|----------|
 | Core turn loop + tools | Yes | Yes |
-| Global parallel vs sequential | Yes (`toolExecution`) | Yes (`tool_execution_mode`, CLI / env / settings) |
-| **Default** | `parallel` | **`sequential`** (differs from TS) |
-| **Per-tool `executionMode`** | Yes (`AgentTool`; any `sequential` in batch → whole batch sequential) | **No** — `Tool` / `ToolDefinition` have no execution hint; `execute_tools` only looks at global flag |
-| Preflight + hooks | Yes (`beforeToolCall` / `afterToolCall`) | Partial (bash destructive gating inline in `execute_single_tool_raw`; no general hooks) |
-| **Parallel tool batch** | Yes — semantics above | **Yes** — when global mode is `parallel`, emits `ToolCall` + chunks in order, runs `dispatch` on threads, appends tool results in assistant tool-call order |
-| `transformContext` | Yes | No |
-| Dynamic `getApiKey` | Yes | Static `api_key` in config |
-| Proxy streaming | `streamProxy` | Not ported |
-| Event granularity | Many (incl. tool execution lifecycle) | Smaller set (`AgentEvent`) |
+| Global parallel vs sequential | Yes (`toolExecution`) | Yes (`tool_execution_mode`) |
+| Per-tool `executionMode` | Yes (`AgentTool.executionMode`) | Yes (`Tool::execution_mode()`) |
+| Tool hooks (`beforeToolCall`/`afterToolCall`) | Yes (via `agent.beforeToolCall`/`afterToolCall`) | Yes (`before_tool_call`/`after_tool_call` in config) |
+| `transformContext` | Yes | Yes (`transform_context` in config) |
+| Dynamic API key (`getApiKey`) | Yes (via `ModelRegistry`) | Yes (`get_api_key` in config) |
+| Event granularity | `tool_execution_start`/`update`/`end`, `turn_start`/`end`, `message_start`/`update`/`end` | `ToolCall`/`ToolResult`, `TurnStart`/`TurnEnd`, `ModelCallStart` |
+| Compaction (manual + auto) | Yes | Yes |
+| Context overflow recovery | Yes (compact + auto-retry) | Yes (compact + retry) |
+| Auto-retry (exponential backoff) | Yes | Yes |
+| Session persistence (JSONL) | Yes | Yes |
+| Branching (fork, branch from entry) | Yes | Yes |
+| Branch summary (LLM-generated) | Yes | Yes |
+| Steering/follow-up queues | Yes | Yes |
+| Queue modes (all / one-at-a-time) | Yes | Yes |
+| Thinking level management | Yes (off/minimal/low/medium/high/xhigh) | Yes (same levels) |
+| Model cycling | Yes (scoped + all available) | Yes (cycle_model) |
+| Custom messages | Yes (`sendCustomMessage`) | Yes (`sendCustomMessage`) |
+| Destructive bash gating | Yes (via `tool_call` extension hook) | Yes (`destructive_bash_confirm_`) |
+| Empty completion nudges | Yes | Yes |
+| Session stats | Yes (`getSessionStats`) | Partial (`/stats` command, no cost/token breakdown) |
+| Session export (HTML) | Yes | No |
+| Session export (JSONL) | Yes (`exportToJsonl`) | Partial (session file IS JSONL, but no explicit export command) |
+| Session import (JSONL) | Yes (`importFromJsonl`) | No |
+| Session lifecycle (switch/new/fork) | Yes (`AgentSessionRuntime`) | Partial (`/new`, `/branch`; no runtime-level switch/fork) |
+| Fork with editor text extraction | Yes | No (branching exists but no interactive fork flow) |
+| Image content support | Yes (`ImageContent` in messages) | No |
+| Bash execution abstraction | Yes (`BashOperations` for remote/local) | Inline (no abstraction) |
+| Bash streaming output | Yes (`onChunk` callback) | Yes (via `on_chunk` in tool execution) |
+| Bash abort/cancel | Yes | No |
+| Bash command prefix / shell path | Yes (via settings) | No |
+| Settings manager | Yes (persistent across sessions) | Partial (CLI args + `settings.json` for some options) |
+| Auth storage / OAuth | Yes (`auth.json`) | No (static `api_key` in config) |
+| Model registry (dynamic discovery) | Yes | No (static model string) |
+| Extension system | Full plugin system | None |
+| RPC mode (JSONL) | Yes | No |
+| Interactive TUI (rich components) | Yes (themes, borders, loaders, selectors) | Basic readline |
+| Keybindings | Yes | No |
+| Slash commands (extension-based) | Yes | Partial (built-in only: /help, /stats, /compact, /thinking, /queues, /clear-queues, /new, /branch, /exit, /rebuild) |
+| Prompt templates | Yes (`/template` expansion) | No |
+| Skills system | Yes (`/skill:name` expansion) | No |
+| Resource loader (themes, prompts, skills) | Yes | No |
+| File watch | Yes | No |
+| Git integration | Yes | No |
+| Package manager integration | Yes | No |
+| Telemetry | Yes | No |
+| Image handling (resize, convert, clipboard) | Yes | No |
+| Frontmatter parsing | Yes | No |
+| Version checking | Yes | No |
+| Config selector (multi-project) | Yes | No |
+| Session picker | Yes | No |
 
-**Parallel mode caveats (C++):** no TS-style sequential preflight for all tools before concurrent dispatch; `ToolRegistry::dispatch` is not documented thread-safe for concurrent use of the *same* tool instance; interactive destructive-bash confirmation from multiple parallel bash calls is a rough edge.
+## What's missing from C++ (core agent features)
 
-## What to port next (prioritized)
+### High priority
 
-### High
+- **`tool_execution_start`/`update`/`end` events** — C++ emits `ToolCall` and `ToolResult` but not the granular lifecycle events that the TUI uses for tool execution progress display. The TS `AgentEvent` type includes these; C++ `AgentEvent::Type` does not.
+- **Image content** — TS messages support `ImageContent` alongside text; C++ `ChatMessage` content is plain string. The llama.cpp provider doesn't need to change (single provider), but `ChatMessage` and the session store would need to support multi-part content.
+- **Bash execution abstraction** — TS `BashOperations` interface enables remote execution (e.g., via SSH). C++ bash execution is inline in the tool. Adding an abstract `BashOperations` interface would align the design.
+- **Bash abort/cancel** — TS `AgentSession` has `_bashAbortController` for cancelling running bash commands. C++ has no bash cancellation mechanism.
+- **Bash command prefix / shell path** — TS reads `shellCommandPrefix` and `shellPath` from settings. C++ bash tool has no such configuration.
+- **Session import from JSONL** — TS `importFromJsonl()` supports importing external session files. C++ can only create new/continue recent sessions.
+- **Session lifecycle management** — TS `AgentSessionRuntime` manages full session lifecycle (switch, new, fork, import) with teardown/rebind semantics. C++ has `/new` and `/branch` but no runtime-level session replacement.
 
-- [ ] **Per-tool `executionMode` parity** — Mirror README semantics on the C++ side so batch scheduling matches TS:
-  - Extend **`Tool`** (and/or **`ToolDefinition`** if anything must be visible to the provider layer) with an optional execution hint: inherit global, **`parallel`**, or **`sequential`**.
-  - In **`AgentSession::execute_tools`**: if global mode is parallel but **any** resolved tool in the batch is sequential, run the **full batch** sequentially (same “whole batch” rule as TS). If global is sequential, keep current sequential path.
-  - Register built-ins with conservative defaults where needed (e.g. **`write` / `edit` / `bash`** → sequential, **`read` / `grep`** → parallel or inherit) after auditing thread safety and shared resource use.
-  - Optional: align **CLI default** to `parallel` to match `packages/agent` (document in port README / help text when changed).
-- [ ] **Configurable tool hooks** — `beforeToolCall` / `afterToolCall` (or `std::function` on `AgentSessionConfig`), sequential preflight order compatible with TS before launching parallel work.
-- [ ] **`transformContext`** — optional callback to trim or augment messages before each provider call.
-- [ ] **Dynamic API key** — per-call resolution for OAuth / rotating tokens.
-- [ ] **Steering queue modes** — confirm `QueueMode` matches TS `"all"` vs `"one-at-a-time"` behavior end-to-end.
+### Medium priority
 
-### Medium
+- **Settings manager** — TS `SettingsManager` persists model, thinking level, compaction settings, retry settings, shell config, themes across sessions. C++ has partial settings via `settings.json` but no structured manager.
+- **Auth storage / OAuth** — TS `AuthStorage` + `ModelRegistry` handle API keys and OAuth tokens. C++ uses static `api_key` in config.
+- **Model registry (dynamic discovery)** — TS discovers available models per provider. C++ uses a static model string.
+- **Session stats (full)** — TS `getSessionStats()` returns detailed token breakdown (input/output/cache read/write), cost, tool call counts. C++ `/stats` shows basic token count.
+- **Session export (HTML)** — TS `exportSessionToHtml()` renders session to styled HTML. C++ has no export.
+- **Empty completion nudging** — C++ has this but TS uses it differently (TS has it in the core loop, C++ in `run_turn`). Verify parity of the nudge logic.
 
-- [ ] **`streamProxy` equivalent** — only if the C++ CLI must route through an HTTP proxy like the TS stack.
-- [ ] **Pull-based steering/follow-up** — TS callbacks vs C++ push `steer()` / `followUp()`; revisit if host apps need pull.
-- [ ] **Custom message extensibility** — TS `CustomAgentMessages`; C++ `ChatMessage` is fixed unless a `type`/payload extension is added.
-- [ ] **Richer events** — optional alignment with `tool_execution_start` / `tool_execution_end` style lifecycle if the UI needs completion-order signals while keeping persisted order.
+### Lower priority (out of scope for C++ port)
 
-### Lower
-
-- [ ] **`thinkingBudgets`** — C++ has `ThinkingLevel` only.
-- [ ] **Transport** — TS `sse` vs `fetch`; verify `Provider` / llama.cpp path covers needs.
-- [ ] **Provider-requested retry delay cap** — align with TS `maxRetryDelayMs` behavior if not already.
-
-## Refactoring opportunities (C++)
-
-- [ ] **Extract core loop** — Pull `run_turn`–equivalent logic into something like `agent_loop.{hpp,cpp}` so session composition and loop tests stay smaller (optional; parallel logic currently lives in `agent_session.cpp`).
-- [ ] **Parallel execution module** — If hooks, per-tool modes, cancellation, or a bounded thread pool land, moving batch planning + concurrent dispatch into `parallel_tool_executor.{hpp,cpp}` may shrink `AgentSession`.
-- [ ] **Event delivery** — Optional queue + callback dual path for UI-style subscribers (TS `Agent.subscribe` pattern).
+- **Extension system** — Full plugin system with `ExtensionRunner`, hooks, resource discovery. This is a TS-first feature for the TUI ecosystem.
+- **RPC mode** — JSONL-based RPC for headless/remote execution.
+- **Interactive TUI** — Rich TUI with themes, borders, loaders, selectors, keybindings. C++ uses basic readline.
+- **Slash commands (extension-based)** — TS supports extension-registered slash commands. C++ has built-in commands only.
+- **Prompt templates / Skills** — TS `/template` and `/skill:name` expansion.
+- **File watch / Git / Package manager** — CLI conveniences.
+- **Telemetry / Version checking** — Observability and update checks.
+- **Image handling** (resize, convert, clipboard) — CLI utilities.
+- **Config selector / Session picker** — Multi-project CLI UX.
 
 ## Suggested implementation order
 
-1. ~~Parallel tool execution (global only)~~ **done** (thread-per-call batch; config + tests).
-2. ~~**Per-tool `executionMode` + batch rule** — matches TS scheduling and makes global `parallel` safe for mixed tool batches.~~ **done** (Tool::execution_mode(), ToolDefinition::execution_mode, batch downgrade rule, sequential defaults for write/edit/bash, tests).
-3. ~~**Tool hooks** — sequential preflight and post-processing aligned with TS.~~ **done** (`before_tool_call` / `after_tool_call` in `AgentSessionConfig`, sequential preflight for both sequential and parallel paths, after-tool result modification, tests).
-4. ~~**`transformContext`** — optional callback to trim or augment messages before each provider call.~~ **done** (`transform_context` in `AgentSessionConfig`, applied in `run_turn` before each `call_provider`, tests).
-5. **Dynamic `getApiKey`** — per-call resolution for OAuth / rotating tokens.
-6. **Event taxonomy** — after hooks, when observability requirements are clear.
-7. **Loop extraction** — when the above stabilize to avoid churn.
+1. **`tool_execution_start`/`update`/`end` events** — Add to `AgentEvent::Type` and emit during tool execution. Aligns with TS event taxonomy.
+2. **Bash abort/cancel** — Add `std::atomic<bool>` or `std::stop_token` to bash tool, support Ctrl-C during execution.
+3. **Bash command prefix / shell path** — Add to `AgentSessionConfig`, pass to bash tool.
+4. **Bash execution abstraction** — Extract `BashOperations` interface, make bash tool use it.
+5. **Image content** — Extend `ChatMessage` to support multi-part content (text + images).
+6. **Session import** — Add `/import` command to load external JSONL files.
+7. **Session lifecycle** — Add `/switch`, `/fork` commands with full session replacement semantics.
+8. **Settings manager** — Structured settings persistence for model, thinking level, shell config.
+9. **Session stats (full)** — Add token breakdown, cost, tool call counts to `/stats`.
+10. **Model registry** — Dynamic model discovery (only relevant if multi-provider support is added later).
 
 ## Files (reference)
 
-**Implemented global parallel mode:**
+**Core agent:**
+- `src/agent_session.{hpp,cpp}` — loop, tools, compaction, retry, branching, queues
+- `src/agent.{hpp,cpp}` — CLI entry point, config → session config mapping
+- `src/config.{hpp,cpp}` — CLI arg parsing, `settings.json`
 
-- `src/agent_session.{hpp,cpp}` — `execute_tools`, `execute_single_tool_raw`, `emit_tool_result`, `tool_dispatch_mutex_`
-- `src/config.{hpp,cpp}` — `tool_execution_mode`, CLI, env, `settings.json`
-- `src/agent.cpp` — maps `Config` into `AgentSessionConfig`
-- `src/providers/provider.hpp` — `ToolDefinition` (name, description, schema only today)
-- `src/tools/tool.hpp`, `tool_registry.cpp` — registration and `build_tool_definitions`
-- `test/agent_session_test.cpp` — `parallel_tool_execution`
+**Modes:**
+- `src/modes/interactive_mode.{hpp,cpp}` — readline loop, commands, `/rebuild`
+- `src/modes/print_mode.{hpp,cpp}` — single-prompt mode
+- `src/modes/tui_animation.{hpp,cpp}` — animation during tool rounds
 
-**Likely touch points for `executionMode` parity:**
+**Provider:**
+- `src/providers/provider.hpp` — `Provider` interface, `ChatMessage`, `ToolDefinition`, `ToolCall`
+- `src/providers/llama_cpp_provider.{hpp,cpp}` — llama.cpp HTTP API
 
-- `src/tools/tool.hpp` — optional virtual or enum field for execution mode
-- `src/providers/provider.hpp` — only if the mode must be exposed on definitions sent to the model (TS keeps it on `AgentTool`, not necessarily in the LLM tool list; usually **runtime-only** on the C++ `Tool` + registry lookup in `execute_tools`)
-- `src/agent_session.cpp` — batch classification: any sequential tool → sequential path; else honor global parallel
+**Session store:**
+- `src/session_entry.{hpp,cpp}` — JSONL session store, tree traversal, branching
+- `src/compaction.{hpp,cpp}` — compaction logic
 
-**Still hypothetical / future:**
+**Tools:**
+- `src/tools/tool.hpp` — `Tool` base class with `execution_mode()`
+- `src/tools/tool_registry.{hpp,cpp}` — registration, `build_tool_definitions`
+- `src/tools/{bash,edit,find,grep,ls,read,write}_tool.{hpp,cpp}` — built-in tools
+- `src/tools/bash_destructive.{hpp,cpp}` — destructive bash heuristics
 
-- `src/agent_loop.{hpp,cpp}` — extracted loop (not created yet)
-- `src/parallel_tool_executor.{hpp,cpp}` — optional split from `AgentSession`
-- `src/tool_hooks.hpp` — hook types when hooks are added
+**Other:**
+- `src/branch_summary.{hpp,cpp}` — LLM-based branch summarization
+- `src/context_loader.{hpp,cpp}` — context file loading
+- `src/system_prompt.{hpp,cpp}` — system prompt generation
+- `src/file_ops.{hpp,cpp}` — file operations
+- `src/session_entry.cpp` — session entry serialization
+- `src/pending_message_queue.hpp` — steering/follow-up queue implementation

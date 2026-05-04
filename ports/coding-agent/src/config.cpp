@@ -119,6 +119,7 @@ void print_usage() {
       << "  --retry-max-retries <n>  Max retry attempts for transient errors (default: 3)\n"
       << "  --retry-base-delay-ms <ms> Base delay for exponential backoff in ms (default: 1000)\n"
       << "  --retry-max-delay-ms <ms>  Maximum backoff delay in ms (default: 60000)\n"
+      << "  --gpu-lock-path <path>     GPU semaphore lock file path (default: <cwd>/.pi/gpu.lock)\n"
       << "  --prompt <text>           Prompt text to send\n"
       << "  --help                    Show this help\n"
       << "\n"
@@ -168,6 +169,7 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
       .retry_base_delay_ms = 1000,
       .retry_max_retry_delay_ms = 60000,
       .retry_timeout_ms = 30000,
+      .gpu_lock_path = "",
   };
 
   if (const auto settings = load_settings_json(); settings.has_value()) {
@@ -412,6 +414,10 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
         error = "Invalid value for --retry-max-delay-ms";
         return std::nullopt;
       }
+      continue;
+    }
+    if (arg == "--gpu-lock-path" && i + 1 < argc) {
+      config.gpu_lock_path = argv[++i];
       continue;
     }
     if (arg == "--prompt" && i + 1 < argc) {

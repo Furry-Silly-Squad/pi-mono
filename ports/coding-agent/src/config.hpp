@@ -44,6 +44,8 @@ struct Config {
   int retry_base_delay_ms = 1000;
   int retry_max_retry_delay_ms = 60000;
   int retry_timeout_ms = 30000;
+  /// Sub-agent GPU lock file path (default: <cwd>/.pi/gpu.lock).
+  std::string gpu_lock_path;
 };
 
 std::optional<Config> parse_config(int argc, char** argv, std::string& error);

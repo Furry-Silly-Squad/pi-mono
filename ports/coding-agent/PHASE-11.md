@@ -25,6 +25,23 @@ Main Process (coding-agent)
   └── Continue conversation with aggregated results
 ```
 
+## Current Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `SubTaskEntry` / `SubTaskDecompositionEntry` | ✅ Implemented | In `session_entry.hpp`, variant updated |
+| `GpuSemaphore` | ✅ Implemented | File-based lock, PID liveness, stale lock cleanup |
+| `SubAgent::spawn()` | ✅ Implemented | fork/exec, GPU lock, result collection |
+| `decomposeAndExecute()` | ✅ Implemented | Heuristic detection, LLM decomposition, sequential execution |
+| `--gpu-lock-path` CLI flag | ✅ Implemented | Config field exists but **not used** at runtime (see Issues) |
+| Dependency resolution | ❌ Not implemented | `dependencies` field in JSON is ignored |
+| DAG validation / cycle detection | ❌ Not implemented | |
+| Child process timeout | ❌ Not implemented | `waitpid()` blocks indefinitely |
+| `/decompose` command | ❌ Not implemented | Only heuristic-based detection |
+| `/subtasks` command | ❌ Not implemented | |
+| Parallel subagent execution | ❌ Not implemented | Sequential only |
+| Multi-server GPU routing | ❌ Not implemented | Single global lock file |
+
 ## Decomposition Format
 
 ### LLM Output Format
@@ -107,19 +124,17 @@ Rules:
 - Dependencies must form a DAG (no cycles)
 - Priority is used for execution order (lower number = execute first)
 - Context files are files the sub-agent should read before starting
-- Expected artifacts are files the sub-agent is expected to create or modify
+- Expected artifacts are files the sub-agent is expected to create/modify
 - If the request is a single task, respond with a single subtask
 - If the request doesn't need decomposition, respond with a single subtask that handles the whole request
 ```
 
 ### Decomposition Decision Logic
 
-The main agent decides whether to decompose based on heuristics:
+The main agent decides whether to decompose based on heuristics (implemented in `looks_like_multi_task()`):
 
-1. **Multi-sentence requests** with distinct actions ("implement X, add tests, update docs")
-2. **Explicit multi-task language** ("do A, then B, then C")
-3. **Cross-module changes** that touch unrelated parts of the codebase
-4. **User explicitly requests decomposition** (e.g., `/decompose` command)
+1. **Clause counting**: Counts distinct imperative clauses separated by commas, semicolons, or newlines. Multi-task if `clause_count >= 3` or `comma_count >= 2`.
+2. **No explicit command**: There is no `/decompose` command — only heuristic detection.
 
 If the request is a single coherent task, the main agent handles it directly without decomposition.
 
@@ -217,13 +232,13 @@ When multiple servers are configured, the parent can route subtasks to different
 Each subtask spawns a child `coding-agent` process:
 
 ```cpp
-// Pseudocode for subagent.hpp/cpp
 struct SubAgentResult {
-  std::string sessionId;
-  std::string sessionPath;
-  std::string lastAssistantMessage;
-  bool success;
+  std::string sessionId;        // Child session ID
+  std::string sessionPath;      // Full path to child session file
+  std::string lastAssistantMessage;  // Last assistant message content
+  bool success = false;
   std::optional<std::string> error;
+  int exitCode = -1;
 };
 
 class SubAgent {
@@ -234,15 +249,15 @@ class SubAgent {
       const std::string& binaryPath,
       const std::string& subtaskDescription,
       const std::vector<std::string>& contextFiles,
-      const std::string& parentSessionPath,
-      const Config& parentConfig
+      const ServerConfig& serverConfig,
+      const std::string& parentSessionDir,
+      const std::string& gpuLockPath,
+      int maxTokens,
+      float temperature
   );
 
-  /// Check if a GPU lock is available (file-based semaphore).
-  static bool tryAcquireGpuLock(const std::string& lockPath);
-
-  /// Release the GPU lock.
-  static void releaseGpuLock(const std::string& lockPath);
+  /// Read the last assistant message from a session file.
+  static std::string readLastAssistantMessage(const std::string& sessionPath);
 };
 ```
 
@@ -256,7 +271,7 @@ coding-agent \
   --api-key <api-key> \
   --cwd <cwd> \
   --new-session \
-  --session subtask-<parent-id>-<subtask-id>.jsonl \
+  --session <child-session-path> \
   --max-tokens <max-tokens> \
   --temperature <temperature> \
   --no-branch-summary \
@@ -277,12 +292,12 @@ class GpuSemaphore {
   /// Release the GPU lock.
   static void release(const std::string& lockPath);
 
-  /// Check if the lock is held (by another process).
+  /// Check if the lock is currently held by another process.
   static bool isHeld(const std::string& lockPath);
 };
 ```
 
-**Implementation:** Write PID + timestamp to lock file. On acquire, check if PID is alive. If dead, stale lock. If alive, wait. On release, delete lock file.
+**Implementation:** Write PID + timestamp to lock file. On acquire, check if PID is alive. If dead, stale lock cleaned up. If alive, wait with polling (100ms interval). On release, delete lock file.
 
 ### Child Session Organization
 
@@ -293,12 +308,12 @@ Child sessions are stored under the parent session's directory:
   └── sessions/
       └── --home-user-project--/
           ├── 2025-01-01T00:00:00_abc123.jsonl  (parent session)
-          └── subtask-abc123-1_...jsonl  (child 1)
-          ├── subtask-abc123-2_...jsonl  (child 2)
-          └── subtask-abc123-3_...jsonl  (child 3)
+          ├── subtask-<child-session-id>.jsonl  (child 1)
+          ├── subtask-<child-session-id>.jsonl  (child 2)
+          └── subtask-<child-session-id>.jsonl  (child 3)
 ```
 
-Child session filenames follow the pattern: `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl`
+**Note:** Actual child session filenames are `subtask-<child-session-id>.jsonl` (random hex). The planned pattern `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl` is not yet implemented. This makes it harder to correlate child sessions with their parent and subtask number.
 
 ## Result Collection
 
@@ -308,10 +323,10 @@ After the child process completes, the parent reads the last assistant message f
 
 ```cpp
 std::string readLastAssistantMessage(const std::string& sessionPath) {
-  // Load session entries
-  // Walk from leaf to root
+  // Load session entries from file
+  // Walk from first to last line
   // Find last assistant message
-  // Return content (up to N chars)
+  // Return content (up to 500 chars)
 }
 ```
 
@@ -338,7 +353,7 @@ The result summary stored in `SubTaskEntry.resultSummary` is the first 500 chara
 
 ## Implementation Plan
 
-### Files to Create
+### Files Created
 
 | File | Purpose |
 |------|---------|
@@ -347,81 +362,147 @@ The result summary stored in `SubTaskEntry.resultSummary` is the first 500 chara
 | `src/gpu_semaphore.hpp` | GpuSemaphore class (file-based lock) |
 | `src/gpu_semaphore.cpp` | Implementation of GPU semaphore |
 
-### Files to Modify
+### Files Modified
 
 | File | Changes |
 |------|---------|
-| `src/session_entry.hpp` | Add `SubTaskEntry`, `SubTaskDecompositionEntry` to variant |
-| `src/session_entry.cpp` | Add JSON serialization/deserialization for new entry types |
-| `src/agent_session.hpp` | Add `decomposeAndExecute()`, `waitForSubAgents()` |
-| `src/agent_session.cpp` | Implement decomposition logic, child spawn, result collection |
-| `src/system_prompt.hpp/cpp` | Add Phase 11 decomposition section to system prompt |
-| `src/config.hpp` | Add `subagent_enabled`, `gpu_lock_path` config fields |
+| `src/session_entry.hpp` | Added `SubTaskEntry`, `SubTaskDecompositionEntry` to variant |
+| `src/agent_session.hpp` | Added `decomposeAndExecute()`, `decomposeIntoSubtasks()`, `executeSubtasks()` |
+| `src/agent_session.cpp` | Implemented decomposition logic, child spawn, result collection |
+| `src/config.hpp` | Added `gpu_lock_path` config field |
+| `src/config.cpp` | Added `--gpu-lock-path` CLI flag parsing |
 
 ### Implementation Steps
 
-#### Step 1: Session Entry Types ✅ (design)
+#### Step 1: Session Entry Types ✅ Implemented
 
-Add `SubTaskEntry` and `SubTaskDecompositionEntry` to the session entry variant. Implement JSON serialization/deserialization.
+Added `SubTaskEntry` and `SubTaskDecompositionEntry` to the session entry variant. JSON serialization/deserialization handled by nlohmann::json.
 
-#### Step 2: GPU Semaphore ✅ (design)
+#### Step 2: GPU Semaphore ✅ Implemented
 
-Implement file-based GPU lock. Check PID liveness. Support timeout.
+File-based GPU lock with PID liveness check. Stale lock cleanup on read. Polling wait with 100ms interval. Timeout configurable (default 60s, used as 120s in spawn).
 
-#### Step 3: SubAgent Spawn ✅ (design)
+#### Step 3: SubAgent Spawn ✅ Implemented
 
-Implement `SubAgent::spawn()` that:
-- Acquires GPU lock (waits with timeout)
-- Constructs child command line
-- Spawns child via `popen()` or `fork()` + `exec()`
-- Waits for child to complete
-- Collects exit code and session file path
-- Releases GPU lock
+`SubAgent::spawn()` acquires GPU lock (waits with 120s timeout), constructs child command line, spawns via fork/exec (Unix) or CreateProcess (Windows), waits for completion, collects exit code and session file path, releases GPU lock.
 
-#### Step 4: Result Collection ✅ (design)
+#### Step 4: Result Collection ✅ Implemented
 
-Implement result reading from child session files. Parse last assistant message.
+Reads last assistant message from child session file by parsing JSONL lines. Returns first 500 characters as summary.
 
-#### Step 5: AgentSession Integration ✅ (design)
+#### Step 5: AgentSession Integration ✅ Implemented (partial)
 
-Add `decomposeAndExecute()` method to `AgentSession`:
-- Detects multi-task requests via heuristics or `/decompose` command
-- Calls LLM to decompose into subtasks
-- Creates `SubTaskDecompositionEntry` in parent session
-- Iterates through subtasks (respecting dependencies)
-- Spawns child for each subtask
-- Collects results
-- Injects results as `CustomMessageEntry`
-- Continues parent turn
+`decomposeAndExecute()` detects multi-task requests via heuristic (`looks_like_multi_task()`), calls LLM to decompose, creates `SubTaskDecompositionEntry`, spawns children sequentially, collects results, injects as `CustomMessageEntry`. **Dependencies field is ignored** — subtasks always execute in array order.
 
-#### Step 6: System Prompt Update ✅ (design)
+#### Step 6: System Prompt Update ✅ Implemented
 
-Add decomposition instructions to system prompt. LLM learns to output JSON for multi-task requests.
+Decomposition instructions added to system prompt via `decomposeIntoSubtasks()` prompt construction.
 
-#### Step 7: Config and CLI Flags ✅ (design)
+#### Step 7: Config and CLI Flags ✅ Implemented (partial)
 
-Add `--subagent-enabled` flag (default: true). Add `--gpu-lock-path` for custom lock location.
+`--gpu-lock-path` flag added. `--subagent-enabled` flag **not implemented** — subagent mode is always on when the heuristic triggers.
+
+## Issues and Architecture Concerns
+
+### 1. GPU Lock File — Single Global Lock (Critical for Multi-GPU)
+
+**Current behavior:** The GPU lock is a single file at `<cwd>/.pi/gpu.lock`. All subagents on the same machine fight over this one lock.
+
+**Problem for multi-GPU (laptop + server):** If you run a smaller model on your laptop GPU and connect to a separate server GPU, both are separate `llama-cpp` servers on different machines. The file-based lock at `<cwd>/.pi/gpu.lock` does not work across machines. Even if the parent and child share the same filesystem, the lock only serializes at the process level — it does not distinguish between different GPUs.
+
+**What needs to happen:**
+- The lock file path should be derived from the server's unique identifier (e.g., `baseUrl` hash), not from `<cwd>`.
+- For cross-machine scenarios, a network-based lock (e.g., Redis, NFS with proper locking) is needed, or each server should have its own lock file.
+- The `config_.gpu_lock_path` field exists but is **never used** at runtime — `executeSubtasks()` hardcodes `config_.cwd + "/.pi/gpu.lock"`.
+
+**Immediate fix:** Use `config_.gpu_lock_path` if set, otherwise fall back to the hardcoded path. For multi-GPU, add a `--gpu-lock-path` per-server convention or auto-generate lock paths from server identifiers.
+
+### 2. `config_.gpu_lock_path` Is Dead Code
+
+The config field is parsed from `--gpu-lock-path` CLI flag but never read in `executeSubtasks()`. The lock path is always computed as `config_.cwd + "/.pi/gpu.lock"`.
+
+### 3. Dependencies Field Is Ignored
+
+The LLM can produce `dependencies: ["1"]` in the JSON, but `executeSubtasks()` runs subtasks in array order (index 0, 1, 2, ...) and never checks the `dependencies` field. It also hardcodes `dependencies.push_back(std::to_string(i))` when creating `SubTaskEntry`, which creates an implicit linear chain.
+
+**Impact:** If the LLM produces a DAG with parallel branches, those branches still execute sequentially. The `expected_artifacts` and `dependencies` fields are parsed but never acted upon.
+
+### 4. No DAG Validation or Cycle Detection
+
+If the LLM produces a cycle (e.g., task 1 depends on task 2, task 2 depends on task 1), there is no validation. The system would deadlock or skip tasks incorrectly.
+
+### 5. No Child Process Timeout
+
+`waitpid(pid, &status, 0)` blocks indefinitely. If a child process hangs (e.g., infinite tool loop), the parent hangs forever. The `--gpu-lock-path` timeout (120s) only applies to lock acquisition, not to child execution.
+
+### 6. Binary Path Resolution
+
+`std::string binaryPath = "coding-agent";` — the child is launched via `execv("coding-agent", ...)` which assumes `coding-agent` is in PATH. Should resolve from `argv[0]` or a config option for reliability.
+
+### 7. Child Session Filename Does Not Match Spec
+
+PHASE-11.md documents: `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl`
+Actual code produces: `subtask-<child-session-id>.jsonl`
+
+Missing: parent session ID, subtask ID, timestamp prefix. This makes it hard to correlate child sessions with their parent and find the correct subtask result.
+
+### 8. UI: TuiAnimation State Confusion During Subtask Execution
+
+**Current behavior:** When `decomposeAndExecute()` runs, it produces chunks like `[DECOMPOSE]`, `[SUBTASK 1/3]`, `[tool: subtask_1] completed`. The `on_chunk` callback in `interactive_mode.cpp` calls `animation.on_first_stream_chunk()` and `animation.update(AnimationState::Generating, "")` on the first chunk.
+
+**Problem:** The user sees the "generating" animation (thinking dots) while subagents are actually running. No LLM text is streaming from the parent — it's just orchestration output. The animation state does not distinguish between "parent is generating text" and "parent is waiting for a subagent."
+
+**UI implications for the first coding-agent spawned:**
+1. The user types a multi-task request.
+2. The parent shows `[DECOMPOSE] Detecting subtasks...` — animation starts.
+3. LLM call for decomposition happens (no visible output during the call).
+4. `[DECOMPOSE] Found N subtask(s)` — user sees this.
+5. `[EXECUTE] Starting subtask execution...` — user sees this.
+6. `[SUBTASK 1/N] Implement auth module` — animation continues showing "generating".
+7. The child process runs (potentially minutes) — user sees nothing new until the child completes.
+8. `[tool: subtask_1] completed` — result appears.
+
+The user has no way to see the child's progress. The child's TUI output is discarded (child runs in non-interactive mode via `--new-session` with the prompt as argument, no readline loop). The only visibility is the parent's `on_chunk` output.
+
+**What should happen:**
+- Show `[SUBTASK 1/N] Running... (waiting for completion)` with a distinct state (not "generating").
+- Optionally stream the child's output back to the parent via a pipe, so the user can see tool calls and file edits in real-time.
+- Add a `/subtasks` command to list subtask status and results.
+
+### 9. No `/decompose` Command
+
+The system prompt mentions `/decompose` as an explicit trigger, but it is not implemented. Decomposition is purely heuristic-based via `looks_like_multi_task()`.
+
+### 10. No `/subtasks` Command
+
+There is no way to list active subtasks, view their status, or see results without parsing the session file.
 
 ## Future Considerations (Not in Phase 11)
 
-- **Parallel sub-agents**: Allow multiple children when GPU resources permit
+- **Parallel sub-agents**: Allow multiple children when GPU resources permit (requires multi-GPU lock support)
 - **Inter-agent communication**: Sub-agents can read/write shared files during execution
 - **Task graph visualization**: Display subtask DAG in TUI
 - **Retry logic**: Retry failed subtasks automatically
-- **Timeout per subtask**: Kill child if it runs too long
+- **Timeout per subtask**: Kill child if it runs too long (e.g., 30 min)
 - **`/subtasks` command**: List active subtasks and their status
 - **`/subtask <id>` command**: View details of a specific subtask
+- **`/decompose` command**: Explicitly trigger decomposition
+- **Child output streaming**: Pipe child stdout/stderr back to parent for real-time visibility
+- **Cross-machine GPU locks**: Network-based semaphore for multi-server setups
 
 ## Risks and Mitigations
 
-| Risk | Mitigation |
-|------|-----------|
-| Child process hangs indefinitely | GPU semaphore timeout + max execution time per subtask |
-| Child process fails silently | Check exit code, capture stderr |
-| Result summary too short for context | Configurable result summary length (default 500 chars) |
-| Too many subtasks overwhelm GPU | Sequential execution (one at a time) |
-| Decomposition produces invalid JSON | Fallback to single subtask if JSON parse fails |
-| Subtask dependencies create deadlock | Validate DAG before execution, detect cycles |
+| Risk | Mitigation | Status |
+|------|-----------|--------|
+| Child process hangs indefinitely | GPU semaphore timeout + max execution time per subtask | ❌ Not implemented |
+| Child process fails silently | Check exit code, capture stderr | ✅ Implemented |
+| Result summary too short for context | Configurable result summary length (default 500 chars) | ✅ Implemented |
+| Too many subtasks overwhelm GPU | Sequential execution (one at a time) | ✅ Implemented |
+| Decomposition produces invalid JSON | Fallback to single subtask if JSON parse fails | ✅ Implemented |
+| Subtask dependencies create deadlock | Validate DAG before execution, detect cycles | ❌ Not implemented |
+| GPU lock blocks across machines | File-based lock does not work cross-machine | ❌ Not addressed |
+| No visibility into child progress | Child output not streamed to parent | ❌ Not implemented |
+| Binary not in PATH | Hardcoded "coding-agent" string | ❌ Not addressed |
 
 ## Testing Strategy
 
@@ -444,3 +525,4 @@ Add `--subagent-enabled` flag (default: true). Add `--gpu-lock-path` for custom 
 - Verify child session files are created
 - Verify results appear in parent session
 - Verify GPU lock file is created/released
+- Test with two separate llama-cpp servers (different GPUs) — **currently broken**

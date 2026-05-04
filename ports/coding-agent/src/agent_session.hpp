@@ -504,6 +504,17 @@ class AgentSession {
                              const ChunkCallback& on_chunk,
                              std::atomic<bool>* cancel_flag);
 
+    /// Explicitly decompose a user prompt into subtasks and execute them.
+    /// Unlike `decomposeAndExecute`, this is triggered by the `/decompose` command
+    /// and always attempts decomposition regardless of heuristic detection.
+    bool decomposeAndExecuteExplicit(const std::string& user_input,
+                                     const ChunkCallback& on_chunk,
+                                     std::atomic<bool>* cancel_flag);
+
+    /// List all subtask entries from the current session.
+    /// Returns a formatted string with task ID, description, state, and result summary.
+    std::string listSubtasks() const;
+
  private:
     // ====================================================================
     // Internal Run Loop

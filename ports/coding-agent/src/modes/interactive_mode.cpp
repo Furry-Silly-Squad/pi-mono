@@ -235,6 +235,8 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
                       << "  /branch            Branch current session\n"
                       << "  /branch summary [text|id]  Branch with summary\n"
                       << "  /branch from:<id>  Branch from specific entry\n"
+                      << "  /decompose <text>  Explicitly decompose a multi-task request\n"
+                      << "  /subtasks          List subtask status and results\n"
                       << "  /exit, /quit       Exit the agent\n"
                       << "==================\n\n";
             continue;
@@ -458,6 +460,64 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
 
         // --- end /rebuild ---
 
+        // --- /decompose command (Issue 9) ---
+        if (prompt.starts_with("/decompose")) {
+            std::string args = prompt.substr(10);
+            size_t firstNonSpace = args.find_first_not_of(" \t");
+            if (firstNonSpace != std::string::npos) {
+                args = args.substr(firstNonSpace);
+            } else {
+                args.clear();
+            }
+
+            if (args.empty()) {
+                std::cout << "[decompose] No prompt provided. Use: /decompose <your multi-task request>\n";
+                continue;
+            }
+
+            global_cancel_flag.store(false, std::memory_order_release);
+
+            TuiAnimation animation;
+            agent.set_event_handler([&animation](const AgentEvent& ev) {
+                if (ev.type == AgentEvent::Type::ModelCallStart) {
+                    animation.resume_for_next_model_turn();
+                    return;
+                }
+            });
+
+            animation.start(AnimationState::Thinking, "");
+
+            const bool ok = agent.decomposeAndExecuteExplicit(
+                args,
+                [&animation](const std::string& chunk) {
+                    if (chunk.starts_with("[SUBTASK") || chunk.starts_with("[DECOMPOSE]") ||
+                        chunk.starts_with("[EXECUTE]") || chunk.starts_with("[tool: subtask_")) {
+                        animation.update(AnimationState::Running, "");
+                    } else {
+                        animation.on_first_stream_chunk();
+                        animation.update(AnimationState::Generating, "");
+                    }
+                    std::cout << chunk << std::flush;
+                },
+                &global_cancel_flag
+            );
+
+            animation.stop();
+
+            if (!ok) {
+                std::cout << "\n[decompose] Decomposition failed or was interrupted\n";
+            } else {
+                std::cout << "\n[decompose] Done\n";
+            }
+            continue;
+        }
+
+        // --- /subtasks command (Issue 10) ---
+        if (prompt == "/subtasks") {
+            std::cout << agent.listSubtasks() << "\n";
+            continue;
+        }
+
         // Reset cancel flag for each new user turn.
         global_cancel_flag.store(false, std::memory_order_release);
 
@@ -499,8 +559,15 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
         const bool ok = agent.run(
             prompt,
             [&animation](const std::string& chunk) {
-                animation.on_first_stream_chunk();
-                animation.update(AnimationState::Generating, "");
+                // Subtask orchestration messages: show "running" state instead of "generating"
+                // to avoid confusing the user (no LLM text streaming during subagent execution).
+                if (chunk.starts_with("[SUBTASK") || chunk.starts_with("[DECOMPOSE]") ||
+                    chunk.starts_with("[EXECUTE]") || chunk.starts_with("[tool: subtask_")) {
+                    animation.update(AnimationState::Running, "");
+                } else {
+                    animation.on_first_stream_chunk();
+                    animation.update(AnimationState::Generating, "");
+                }
                 std::cout << chunk << std::flush;
             },
             &global_cancel_flag

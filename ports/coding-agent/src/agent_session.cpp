@@ -1610,9 +1610,8 @@ bool AgentSession::executeSubtasks(const std::vector<SubTask>& subtasks,
         taskMap[task.id] = &task;
     }
 
-    // Determine binary path: resolve from argv[0] if available, otherwise fallback to PATH lookup
-    std::string binaryPath = "coding-agent";  // Fallback: relies on PATH
-    // In production, this should be resolved from the parent binary path
+    // Use the binary path resolved from argv[0] in agent.cpp, with PATH fallback.
+    std::string binaryPath = config_.subagentBinaryPath.empty() ? "coding-agent" : config_.subagentBinaryPath;
 
     // Determine GPU lock path: use config if set, otherwise derive from server URL
     // to ensure different servers get different lock files (critical for multi-GPU setups).
@@ -1814,6 +1813,68 @@ bool AgentSession::decomposeAndExecute(const std::string& user_input,
     on_chunk("\n[EXECUTE] Subtask execution " + std::string(success ? "completed" : "interrupted") + "\n");
 
     return success;
+}
+
+bool AgentSession::decomposeAndExecuteExplicit(const std::string& user_input,
+                                                const ChunkCallback& on_chunk,
+                                                std::atomic<bool>* cancel_flag) {
+    (void)looks_like_multi_task(user_input);  // Skip heuristic for explicit command
+
+    on_chunk("\n[DECOMPOSE] Decomposing user request...\n");
+
+    // Step 1: Decompose into subtasks
+    std::vector<SubTask> subtasks;
+    std::string error;
+
+    if (!decomposeIntoSubtasks(user_input, subtasks, error)) {
+        on_chunk("[DECOMPOSE] Failed: " + error + "\n");
+        return false;
+    }
+
+    on_chunk("[DECOMPOSE] Found " + std::to_string(subtasks.size()) + " subtask(s)\n");
+
+    // Step 2: Execute subtasks
+    on_chunk("\n[EXECUTE] Starting subtask execution...\n");
+    bool success = executeSubtasks(subtasks, on_chunk, cancel_flag);
+    on_chunk("\n[EXECUTE] Subtask execution " + std::string(success ? "completed" : "interrupted") + "\n");
+
+    return success;
+}
+
+std::string AgentSession::listSubtasks() const {
+    auto entries = session_->getEntries();
+    std::vector<const SubTaskEntry*> subtasks;
+    for (const auto& entry : entries) {
+        if (const auto* ste = std::get_if<SubTaskEntry>(&entry)) {
+            subtasks.push_back(ste);
+        }
+    }
+
+    if (subtasks.empty()) {
+        return "No subtasks found in this session.\n";
+    }
+
+    std::ostringstream oss;
+    oss << "Subtasks (" << subtasks.size() << "):\n";
+    for (const auto* ste : subtasks) {
+        oss << "  [" << ste->subtaskId << "] " << ste->state;
+        if (!ste->description.empty()) {
+            oss << " - " << ste->description;
+        }
+        if (!ste->resultSummary.has_value() || ste->resultSummary->empty()) {
+            oss << "\n";
+        } else {
+            std::string summary = *ste->resultSummary;
+            if (summary.size() > 100) {
+                summary = summary.substr(0, 100) + "...";
+            }
+            oss << "\n        Result: " << summary << "\n";
+        }
+        if (ste->errorMessage.has_value() && !ste->errorMessage->empty()) {
+            oss << "        Error: " << *ste->errorMessage << "\n";
+        }
+    }
+    return oss.str();
 }
 
 }  // namespace coding_agent

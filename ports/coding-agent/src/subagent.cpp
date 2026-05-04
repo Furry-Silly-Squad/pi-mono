@@ -237,8 +237,10 @@ SubAgentResult SubAgent::spawn(
   }
 
   args.push_back("--no-branch-summary");
+  args.push_back("--print");
 
   // Add subtask description as the prompt
+  args.push_back("--prompt");
   args.push_back(subtaskDescription);
 
   // Acquire GPU lock before spawning

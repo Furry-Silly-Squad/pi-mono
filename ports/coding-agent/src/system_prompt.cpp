@@ -51,25 +51,24 @@ std::string build_system_prompt(
     }
   }
 
+  /*
   out << "\n## Task Delegation (Phase 11)\n\n";
   out << "If the user's request involves multiple distinct tasks (e.g., "
       << "\"implement X, add tests, update docs\"),\n";
   out << "you MUST decompose it into subtasks before executing. Respond with a JSON object "
       << "matching this schema:\n\n";
   out << "{\n";
-  out << "  \"decomposition\": {\n";
-  out << "    \"description\": \"Brief summary of the user's request\",\n";
-  out << "    \"subtasks\": [\n";
-  out << "      {\n";
-  out << "        \"id\": \"1\",\n";
-  out << "        \"description\": \"Natural language description of what to do\",\n";
-  out << "        \"context_files\": [\"file1\", \"file2\"],\n";
-  out << "        \"expected_artifacts\": [\"output1\", \"output2\"],\n";
-  out << "        \"dependencies\": [],\n";
-  out << "        \"priority\": 1\n";
-  out << "      }\n";
-  out << "    ]\n";
-  out << "  }\n";
+  out << "  \"description\": \"Brief summary of the user's request\",\n";
+  out << "  \"subtasks\": [\n";
+  out << "    {\n";
+  out << "      \"id\": \"1\",\n";
+  out << "      \"description\": \"Natural language description of what to do\",\n";
+  out << "      \"context_files\": [\"file1\", \"file2\"],\n";
+  out << "      \"expected_artifacts\": [\"output1\", \"output2\"],\n";
+  out << "      \"dependencies\": [],\n";
+  out << "      \"priority\": 1\n";
+  out << "    }\n";
+  out << "  ]\n";
   out << "}\n\n";
   out << "Rules:\n";
   out << "- Each subtask should be self-contained and executable by a single coding-agent "
@@ -81,6 +80,7 @@ std::string build_system_prompt(
   out << "- If the request is a single task, respond with a single subtask\n";
   out << "- If the request doesn't need decomposition, respond with a single subtask that "
       << "handles the whole request\n";
+      */
 
   return out.str();
 }

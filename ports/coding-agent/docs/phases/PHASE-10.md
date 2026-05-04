@@ -11,32 +11,25 @@ Add a `/rebuild` command to interactive mode that:
 
 This enables the agent to efficiently develop and iterate on its own code.
 
-## Feasibility
+## Implementation Status: **Complete**
 
-**Yes, feasible.** The approach is straightforward:
-
-- **Build**: `cmake --build <build-dir>` runs the existing build system
-- **Self-replacement**: `execvp(argv[0], argv)` replaces the current process with the new binary — no child process, no cleanup, no signal handling changes
-- **Session continuity**: Session state lives in the `.jsonl` file on disk, so the new process picks up exactly where the old one left off
+Implemented in commit `c19840ca`.
 
 ## Design Decisions
 
 ### 1. Build directory detection
 
-The build directory contains `CMakeCache.txt` and the compiled binary. Detection strategy:
+The build directory contains `CMakeCache.txt` and the compiled binary. Detection strategy (current implementation):
 
-- **Primary**: Check for `CMakeCache.txt` in the sibling `build/` directory relative to the source (i.e., `../build/` from `src/`)
-- **Secondary**: Check for `CMakeCache.txt` in the current working directory
-- **Fallback**: Error with a message telling the user the build directory
+- **Primary**: Read `/proc/self/exe` to get the absolute path of the running binary, then take its parent directory. Check for `CMakeCache.txt` there.
+- **Secondary**: Check for `CMakeCache.txt` in `cwd/build/`.
+- **Fallback**: Return `std::nullopt`; the `/rebuild` command prints an error message.
 
-The build directory path is detected once at startup and stored.
+The build directory path is detected once at startup and stored in a `static const` variable inside `run_interactive_mode()`.
 
 ### 2. Source directory detection
 
-The source directory contains `CMakeLists.txt`. Detection:
-
-- Look for `CMakeLists.txt` in the parent directory of the binary, or in `../` relative to the build directory
-- Could also use `argv[0]` to determine the binary path and work from there
+Not implemented as a separate step. The build directory detection relies on `/proc/self/exe` (Linux) or `argv[0]`, then checks for `CMakeCache.txt` in the parent directory. No explicit `CMakeLists.txt` detection.
 
 ### 3. Self-replacement via `execvp`
 
@@ -50,7 +43,7 @@ Use `execvp(argv[0], argv)` to replace the current process. This is the cleanest
 
 ### 4. Arguments preservation
 
-`argc` and `argv` must be threaded through the call stack:
+`argc` and `argv` are threaded through the call stack:
 
 ```
 main(argc, argv)
@@ -58,81 +51,77 @@ main(argc, argv)
     -> run_interactive_mode(agent, interactive_debug, argc, argv)
 ```
 
-The `AgentSession` class does NOT need to know about `argc`/`argv` — only `run_interactive_mode` needs them.
+`argc` is cast to `void` inside the function body (unused except for `execvp`). `argv` is passed to `execvp(argv[0], argv)` on success.
 
 ### 5. Confirmation
 
-The `/rebuild` command should **require confirmation** before building:
+The `/rebuild` command uses a **single-step confirmation** via a `rebuild_pending` flag:
 
-- First invocation of `/rebuild`: prints a warning about rebuilding and waits for `/rebuild confirm` or `/rebuild yes`
-- Second invocation with confirmation: proceeds with the build
-
-Rationale: The agent might have pending tool calls or an in-progress turn. Rebuilding mid-turn would lose that state (though the session file is safe). Confirmation gives the agent a chance to finish its current work.
+- First invocation of `/rebuild`: sets `rebuild_pending = true`, prints a warning, and tells the user to type `/rebuild confirm`
+- `/rebuild confirm` / `/rebuild yes` / `/rebuild y`: if `rebuild_pending` is true, proceeds with the build; if false, falls through to the warning path
+- After execution, `rebuild_pending` is reset to `false`
 
 ### 6. Build output handling
 
-During the build, CMake output should be printed to `stderr` so it doesn't interfere with the readline prompt or the agent's output stream. After the build, a success/failure message is printed.
+The build command uses shell redirection:
+
+```bash
+cmake --build "<build_dir>" --target coding-agent 2>&1
+```
+
+Output (stdout + stderr) goes to the terminal via `std::system()`. No filtering or redirection to stderr.
 
 ### 7. What happens on failure
 
 If the build fails:
-- The old binary remains running (execvp was never called)
-- The agent prints an error message
+- The old binary remains running (`execvp` was never called)
+- The agent prints an error message with the exit code
 - The session is intact — the agent can continue working or retry the rebuild
 
-## Implementation Plan
+If `execvp` fails (extremely unlikely):
+- An error message is printed with `strerror(errno)`
+- The old binary remains running
 
-### Files to modify
+## Implementation Details
 
-1. **`src/modes/interactive_mode.hpp`** — Add `argc`/`argv` parameters to `run_interactive_mode()`
-2. **`src/modes/interactive_mode.cpp`** — Implement `/rebuild` command logic
-3. **`src/agent.cpp`** — Thread `argc`/`argv` to `run_interactive_mode()`
+### Files modified
 
-### Implementation steps
+1. **`src/modes/interactive_mode.hpp`** — `run_interactive_mode()` takes `int argc, char** argv` parameters
+2. **`src/modes/interactive_mode.cpp`** — Implements `/rebuild` command, `detect_build_dir()`, `run_build_command()`, and `confirm_destructive_bash_on_tty()`
+3. **`src/agent.cpp`** — Threads `argc`/`argv` from `run_agent()` to `run_interactive_mode()`
+4. **`src/agent_session.hpp`/`cpp`** — Added `set_destructive_bash_confirm()` and `destructive_bash_confirm_` member for the bash gate mechanism
 
-#### Step 1: Thread argc/argv
-
-```cpp
-// interactive_mode.hpp
-int run_interactive_mode(AgentSession& agent, bool interactive_debug,
-                         int argc, char** argv);
-```
-
-#### Step 2: Detect build directory at startup
-
-In `run_interactive_mode()`, detect the build directory once:
+### Key functions
 
 ```cpp
-static std::optional<std::string> detect_build_dir() {
-    // Check ../build/ relative to source
-    // Check ./build/ relative to cwd
-    // Check for CMakeCache.txt
-}
+std::optional<std::string> detect_build_dir(const char* argv0);
+int run_build_command(const std::string& build_dir);
+bool execute_rebuild(const std::string& build_dir, char** argv,
+                     const struct sigaction& original_sigint_handler);
+bool confirm_destructive_bash_on_tty(const std::string& command);
 ```
 
-#### Step 3: Implement `/rebuild` command
+`execute_rebuild()` encapsulates the full build-and-restart sequence: resets SIGINT to `SIG_DFL`, runs the build, restores the handler, checks the result, and calls `execvp` on success.
 
-```
-/rebuild          -> Print warning, set rebuild_pending = true
-/rebuild confirm  -> Run cmake --build <build-dir>
-/rebuild yes      -> Same as confirm
-```
+### Signal handling during build
 
-The build command:
-```bash
-cmake --build <build-dir> --target coding-agent 2>&1
-```
+During the build, the `SIGINT` handler is temporarily reset to `SIG_DFL` so that Ctrl-C kills the build subprocess. After the build completes (success or failure), the original handler is restored.
 
-Check the exit code. If 0, call `execvp(argv[0], argv)`. If non-zero, print error.
+### Token budget formatting
 
-#### Step 4: Handle SIGINT during build
+A `format_token_budget()` function formats the token usage with color-coded percentages (green <50%, yellow 50-80%, red >80%) and displays compaction proximity. This is shown after every turn.
 
-During the build, `SIGINT` should be handled gracefully:
-- The readline signal handler sets `global_cancel_flag`
-- But the build runs in a subprocess (via `system()` or `popen()`)
-- We should catch `SIGINT` during the build and abort it, then print a message
+### Additional features in interactive mode
 
-Actually, `execvp` replaces the process, so we don't need to worry about signal handling during the build itself — the build runs in a child process via `system()`/`popen()`, and `SIGINT` to the parent will kill the child.
+- `/stats` / `/session` — detailed session stats
+- `/tokens` — token usage summary
+- `/compact` — manual compaction trigger
+- `/thinking` — cycle thinking level
+- `/queues` — show steering and follow-up queue state
+- `/clear-queues` — clear all pending queues
+- `/new` — create a new session
+- `/branch` / `/branch summary` / `/branch from:<id>` — session branching
+- `destructive_bash_confirm` — bash gate that prompts on `/dev/tty` for destructive commands
 
 ## Risks and Mitigations
 
@@ -144,9 +133,19 @@ Actually, `execvp` replaces the process, so we don't need to worry about signal 
 | Source directory not found | Clear error message with instructions |
 | `execvp` fails (unlikely) | Falls back to printing an error; old binary still running |
 | Readline state lost after execvp | `execvp` preserves file descriptors; readline reinitializes on the new process |
+| `/proc/self/exe` unavailable (non-Linux) | Falls back to `argv[0]` and `cwd/build/` check |
+| Build interrupted by Ctrl-C | `SIGINT` handler reset to `SIG_DFL` during build; child process is terminated |
+
+## Code Notes
+
+- The `/rebuild` implementation has some duplicated code between the `confirm` path and the `rebuild_pending` path. Both execute the build and `execvp` with the same signal handling. This could be refactored into a helper function.
+- The `argc` parameter is currently unused in the function body (cast to `void`) — it exists solely for `execvp(argv[0], argv)`.
+- `detect_build_dir` is Linux-specific due to `/proc/self/exe`. On macOS, the fallback to `argv[0]` + `cwd/build/` is the primary path.
 
 ## Future considerations
 
 - **`/rebuild --force`**: Skip confirmation, rebuild immediately
 - **`/rebuild --dry-run`**: Show what would be built without actually building
-- **Auto-rebuild on code changes**: Detect if source files changed since last build and offer auto-rebuild (probably not needed for Phase 10)
+- **Auto-rebuild on code changes**: Detect if source files changed since last build and offer auto-rebuild
+- **Cross-platform build dir detection**: Replace `/proc/self/exe` with a more portable approach (e.g., `dl_iterate_phdr` on Linux, `_NSGetExecutablePath` on macOS)
+- **Refactor duplicated build execution code** into a shared helper

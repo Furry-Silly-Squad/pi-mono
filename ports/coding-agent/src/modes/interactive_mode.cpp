@@ -67,6 +67,34 @@ int run_build_command(const std::string& build_dir) {
     return std::system(cmd.c_str());
 }
 
+// Build the coding-agent binary and execvp the new process on success.
+// Resets SIGINT to SIG_DFL during the build so Ctrl-C kills the subprocess,
+// then restores the original handler. Returns true if execvp was called
+// (never returns), false on failure.
+bool execute_rebuild(const std::string& build_dir, char** argv,
+                     const struct sigaction& original_sigint_handler) {
+    std::cout << "[rebuild] Building...\n" << std::flush;
+
+    struct sigaction sa_build{};
+    sa_build.sa_handler = SIG_DFL;
+    sigemptyset(&sa_build.sa_mask);
+    sigaction(SIGINT, &sa_build, nullptr);
+
+    int result = run_build_command(build_dir);
+
+    sigaction(SIGINT, &original_sigint_handler, nullptr);
+
+    if (result != 0) {
+        std::cerr << "[rebuild] Build failed (exit code " << result << ")\n";
+        return false;
+    }
+
+    std::cout << "[rebuild] Build succeeded. Restarting...\n" << std::flush;
+    execvp(argv[0], argv);
+    std::cerr << "[rebuild] execvp failed: " << strerror(errno) << "\n";
+    return false;
+}
+
 bool confirm_destructive_bash_on_tty(const std::string& command) {
     std::cerr << "Destructive bash command requested:\n"
               << command << "\nAllow execution? [y/N]: " << std::flush;
@@ -399,31 +427,13 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
             }
 
             if (normalized == "confirm" || normalized == "yes" || normalized == "y") {
-                std::cout << "[rebuild] Building...\n" << std::flush;
-
-                // Reset SIGINT handler during build so Ctrl-C kills the build
-                struct sigaction sa_build{};
-                sa_build.sa_handler = SIG_DFL;
-                sigemptyset(&sa_build.sa_mask);
-                sigaction(SIGINT, &sa_build, nullptr);
-
-                int result = run_build_command(build_dir.value());
-
-                // Restore signal handler
-                sigaction(SIGINT, &sa, nullptr);
-
-                if (result != 0) {
-                    std::cerr << "[rebuild] Build failed (exit code " << result << ")\n";
-                    continue;
+                if (rebuild_pending) {
+                    std::cout << "[rebuild] Confirming rebuild...\n" << std::flush;
+                    rebuild_pending = false;
                 }
-
-                std::cout << "[rebuild] Build succeeded. Restarting...\n" << std::flush;
-
-                // execvp replaces the current process
-                execvp(argv[0], argv);
-
-                // If execvp fails
-                std::cerr << "[rebuild] execvp failed: " << strerror(errno) << "\n";
+                if (execute_rebuild(build_dir.value(), argv, sa)) {
+                    // Never reaches here (execvp)
+                }
                 continue;
             }
 
@@ -431,25 +441,9 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
                 // Second confirmation - proceed with build
                 std::cout << "[rebuild] Confirming rebuild...\n" << std::flush;
                 rebuild_pending = false;
-                std::cout << "[rebuild] Building...\n" << std::flush;
-
-                struct sigaction sa_build{};
-                sa_build.sa_handler = SIG_DFL;
-                sigemptyset(&sa_build.sa_mask);
-                sigaction(SIGINT, &sa_build, nullptr);
-
-                int result = run_build_command(build_dir.value());
-
-                sigaction(SIGINT, &sa, nullptr);
-
-                if (result != 0) {
-                    std::cerr << "[rebuild] Build failed (exit code " << result << ")\n";
-                    continue;
+                if (execute_rebuild(build_dir.value(), argv, sa)) {
+                    // Never reaches here (execvp)
                 }
-
-                std::cout << "[rebuild] Build succeeded. Restarting...\n" << std::flush;
-                execvp(argv[0], argv);
-                std::cerr << "[rebuild] execvp failed: " << strerror(errno) << "\n";
                 continue;
             }
 

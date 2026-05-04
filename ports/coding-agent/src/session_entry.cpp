@@ -247,6 +247,33 @@ json sessionEntryToJson(const SessionEntry& entry) {
             j["details"] = *e.details;
           }
           return j;
+        } else if constexpr (std::is_same_v<T, SubTaskEntry>) {
+          json j = {{"type", e.type},
+                    {"id", e.id},
+                    {"parentId", e.parentId},
+                    {"timestamp", e.timestamp},
+                    {"subtaskId", e.subtaskId},
+                    {"description", e.description},
+                    {"state", e.state},
+                    {"sessionId", e.sessionId}};
+          if (e.resultSummary.has_value()) {
+            j["resultSummary"] = *e.resultSummary;
+          }
+          if (!e.dependencies.empty()) {
+            j["dependencies"] = e.dependencies;
+          }
+          if (e.errorMessage.has_value()) {
+            j["errorMessage"] = *e.errorMessage;
+          }
+          return j;
+        } else if constexpr (std::is_same_v<T, SubTaskDecompositionEntry>) {
+          json j = {{"type", e.type},
+                    {"id", e.id},
+                    {"parentId", e.parentId},
+                    {"timestamp", e.timestamp},
+                    {"description", e.description},
+                    {"subtasks", e.subtasks}};
+          return j;
         } else {
           return json::object();
         }
@@ -542,7 +569,7 @@ std::vector<FileEntry> loadEntriesFromFile(const std::string& filePath) {
             sie.name = j.at("name").is_null() ? std::nullopt : std::make_optional(j.at("name").get<std::string>());
           }
           entry = std::move(sie);
-        } else if (type == "custom_message") {
+         } else if (type == "custom_message") {
           CustomMessageEntry cme;
           cme.type = "custom_message";
           cme.id = id;
@@ -555,6 +582,39 @@ std::vector<FileEntry> loadEntriesFromFile(const std::string& filePath) {
             cme.details = j.at("details");
           }
           entry = std::move(cme);
+        } else if (type == "subtask") {
+          SubTaskEntry ste;
+          ste.type = "subtask";
+          ste.id = id;
+          ste.parentId = parentId;
+          ste.timestamp = timestamp;
+          ste.subtaskId = j.value("subtaskId", j.value("subtask_id", ""));
+          ste.description = j.value("description", "");
+          ste.state = j.value("state", "pending");
+          ste.sessionId = j.value("sessionId", j.value("session_id", ""));
+          if (j.contains("resultSummary") && j.at("resultSummary").is_string()) {
+            ste.resultSummary = j.at("resultSummary").get<std::string>();
+          }
+          if (j.contains("dependencies") && j.at("dependencies").is_array()) {
+            for (const auto& dep : j.at("dependencies")) {
+              ste.dependencies.push_back(dep.get<std::string>());
+            }
+          }
+          if (j.contains("errorMessage") && j.at("errorMessage").is_string()) {
+            ste.errorMessage = j.at("errorMessage").get<std::string>();
+          }
+          entry = std::move(ste);
+        } else if (type == "subtask_decomposition") {
+          SubTaskDecompositionEntry sde;
+          sde.type = "subtask_decomposition";
+          sde.id = id;
+          sde.parentId = parentId;
+          sde.timestamp = timestamp;
+          sde.description = j.value("description", "");
+          if (j.contains("subtasks")) {
+            sde.subtasks = j.at("subtasks");
+          }
+          entry = std::move(sde);
         } else {
           // Unknown type — skip
           continue;
@@ -1179,6 +1239,40 @@ std::string SessionManager::appendLabelChange(const std::string& targetId,
     labelTimestampsById_.erase(targetId);
   }
 
+  return newId;
+}
+
+std::string SessionManager::appendSubTaskEntry(const std::string& subtaskId,
+                                                const std::string& description,
+                                                const std::string& state,
+                                                const std::string& sessionId,
+                                                const std::vector<std::string>& dependencies) {
+  SubTaskEntry entry;
+  entry.type = "subtask";
+  entry.id = generateIdAvoiding(byId_);
+  entry.parentId = leafId_.value_or("");
+  entry.timestamp = nowTimestamp();
+  entry.subtaskId = subtaskId;
+  entry.description = description;
+  entry.state = state;
+  entry.sessionId = sessionId;
+  entry.dependencies = dependencies;
+  const std::string newId = entry.id;
+  _appendEntry(std::move(entry));
+  return newId;
+}
+
+std::string SessionManager::appendSubTaskDecompositionEntry(const std::string& description,
+                                                             const nlohmann::json& subtasks) {
+  SubTaskDecompositionEntry entry;
+  entry.type = "subtask_decomposition";
+  entry.id = generateIdAvoiding(byId_);
+  entry.parentId = leafId_.value_or("");
+  entry.timestamp = nowTimestamp();
+  entry.description = description;
+  entry.subtasks = subtasks;
+  const std::string newId = entry.id;
+  _appendEntry(std::move(entry));
   return newId;
 }
 

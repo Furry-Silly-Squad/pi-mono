@@ -14,7 +14,9 @@
 #include "compaction.hpp"
 #include "context_loader.hpp"
 #include "file_ops.hpp"
+#include "gpu_semaphore.hpp"
 #include "session_entry.hpp"
+#include "subagent.hpp"
 #include "system_prompt.hpp"
 #include "tools/bash_destructive.hpp"
 #include "tools/tool.hpp"
@@ -530,6 +532,14 @@ bool AgentSession::run_turn(const std::string& user_input,
     };
     user.entry_id = session_->appendMessage(user);
     messages_.push_back(user);
+
+    // Phase 11: Attempt decomposition before normal processing
+    // If this looks like a multi-task request, try to decompose and execute subtasks
+    if (decomposeAndExecute(user_input, on_chunk, cancel_flag)) {
+        // Subtasks were executed and results injected. Continue to let the main agent
+        // respond to those results (the turn loop below will pick up from here).
+        // We don't break here because we want the main agent to see and respond to results.
+    }
 
     // Deliver pending next-turn messages (asides) alongside the user prompt.
     for (const auto& aside : pending_next_turn_messages_) {
@@ -1415,6 +1425,269 @@ void AgentSession::emit_abort_event() {
     AgentEvent ev{};
     ev.type = AgentEvent::Type::Abort;
     emit_event(ev.type, ev);
+}
+
+// ============================================================================
+// Sub-Agent Task Delegation (Phase 11)
+// ============================================================================
+
+bool AgentSession::looks_like_multi_task(const std::string& user_input) const {
+    // Simple heuristic: count distinct action verbs or imperative clauses
+    // Look for patterns like "implement X, add tests, update docs"
+    int clause_count = 0;
+    bool in_clause = false;
+
+    for (size_t i = 0; i < user_input.size(); ++i) {
+        char c = user_input[i];
+        if (c == ',' || c == ';' || c == '\n') {
+            if (in_clause) {
+                clause_count++;
+                in_clause = false;
+            }
+        } else if (!std::isspace(static_cast<unsigned char>(c))) {
+            in_clause = true;
+        }
+    }
+    if (in_clause) clause_count++;
+
+    // Also count commas as separators
+    int comma_count = 0;
+    for (char c : user_input) {
+        if (c == ',') comma_count++;
+    }
+
+    // Multi-task if we have multiple distinct clauses or several comma-separated items
+    return clause_count >= 3 || comma_count >= 2;
+}
+
+bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
+                                          std::vector<std::pair<std::string, std::vector<std::string>>>& subtasks,
+                                          std::string& error) {
+    // Build a decomposition request message
+    ChatMessage decomp_request{
+        .role = "user",
+        .content = "Decompose the following user request into subtasks. Respond with ONLY a JSON object matching this schema:\n\n"
+                   "{\n"
+                   "  \"description\": \"Brief summary\",\n"
+                   "  \"subtasks\": [\n"
+                   "    {\n"
+                   "      \"id\": \"1\",\n"
+                   "      \"description\": \"What to do\",\n"
+                   "      \"context_files\": [\"file1\"],\n"
+                   "      \"expected_artifacts\": [\"output1\"],\n"
+                   "      \"dependencies\": [],\n"
+                   "      \"priority\": 1\n"
+                   "    }\n"
+                   "  ]\n"
+                   "}\n\n"
+                   "Rules:\n"
+                   "- Each subtask should be self-contained and executable by a single coding-agent process\n"
+                   "- Dependencies must form a DAG (no cycles)\n"
+                   "- Priority is used for execution order (lower number = execute first)\n"
+                   "- If the request is a single task, respond with a single subtask\n"
+                   "- Context files are files the sub-agent should read before starting\n"
+                   "- Expected artifacts are files the sub-agent is expected to create or modify\n\n"
+                   "User request: " + user_input,
+    };
+
+    ChatResponse response;
+    std::string call_error;
+
+    // Call provider without tools for decomposition
+    if (!call_provider({decomp_request}, {}, response, call_error, [](const std::string&) {}, nullptr)) {
+        error = "Decomposition LLM call failed: " + call_error;
+        return false;
+    }
+
+    // Parse JSON response
+    try {
+        nlohmann::json j = nlohmann::json::parse(response.content, nullptr, false);
+        if (j.is_discarded()) {
+            error = "Decomposition response is not valid JSON";
+            return false;
+        }
+
+        if (!j.contains("subtasks") || !j["subtasks"].is_array()) {
+            error = "Decomposition response missing 'subtasks' array";
+            return false;
+        }
+
+        // Store decomposition entry in session
+        nlohmann::json subtasks_json = j["subtasks"];
+        std::string description = j.value("description", "Task decomposition");
+        session_->appendSubTaskDecompositionEntry(description, subtasks_json);
+
+        // Extract subtasks
+        for (const auto& st : j["subtasks"]) {
+            std::string desc = st.value("description", "");
+            std::vector<std::string> context_files;
+
+            if (st.contains("context_files") && st["context_files"].is_array()) {
+                for (const auto& cf : st["context_files"]) {
+                    context_files.push_back(cf.get<std::string>());
+                }
+            }
+
+            if (!desc.empty()) {
+                subtasks.push_back({desc, context_files});
+            }
+        }
+
+        return !subtasks.empty();
+
+    } catch (const std::exception& ex) {
+        error = std::string("Failed to parse decomposition JSON: ") + ex.what();
+        return false;
+    }
+}
+
+bool AgentSession::executeSubtasks(const std::vector<std::pair<std::string, std::vector<std::string>>>& subtasks,
+                                    const ChunkCallback& on_chunk,
+                                    std::atomic<bool>* cancel_flag) {
+    // Build server config from parent's connection
+    ServerConfig serverConfig;
+    serverConfig.baseUrl = config_.base_url;
+    serverConfig.modelId = current_model_;
+    serverConfig.apiKey = config_.api_key;
+    serverConfig.contextFiles = {};
+
+    // Determine binary path (use same binary as parent)
+    // For now, use the current executable path
+    std::string binaryPath = "coding-agent";  // Should be resolved from argv[0] in production
+
+    // GPU lock path
+    std::string gpuLockPath = config_.cwd + "/.pi/gpu.lock";
+    namespace fs = std::filesystem;
+    fs::create_directories(fs::path(gpuLockPath).parent_path());
+
+    const std::string& parentSessionDir = session_->getSessionDir();
+
+    // Create subtask entries in parent session
+    for (size_t i = 0; i < subtasks.size(); ++i) {
+        const auto& [desc, ctxFiles] = subtasks[i];
+        std::vector<std::string> dependencies;
+        if (i > 0) {
+            dependencies.push_back(std::to_string(i));
+        }
+
+        session_->appendSubTaskEntry(
+            std::to_string(i + 1),
+            desc,
+            "pending",
+            "",
+            dependencies
+        );
+    }
+
+    // Execute subtasks sequentially
+    for (size_t i = 0; i < subtasks.size(); ++i) {
+        // Check for abort
+        if (cancel_flag && cancel_flag->load()) {
+            return false;
+        }
+
+        const auto& [desc, ctxFiles] = subtasks[i];
+
+        // Update subtask state to running
+        auto entries = session_->getEntries();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (auto* ste = std::get_if<SubTaskEntry>(&*it)) {
+                if (ste->subtaskId == std::to_string(i + 1) && ste->state == "pending") {
+                    ste->state = "running";
+                    break;
+                }
+            }
+        }
+
+        on_chunk("\n[SUBTASK " + std::to_string(i + 1) + "/" + std::to_string(subtasks.size()) + "] " + desc + "\n");
+
+        // Spawn child process
+        SubAgentResult result = SubAgent::spawn(
+            binaryPath,
+            desc,
+            ctxFiles,
+            serverConfig,
+            parentSessionDir,
+            gpuLockPath,
+            config_.max_tokens,
+            config_.temperature
+        );
+
+        // Update subtask state
+        entries = session_->getEntries();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (auto* ste = std::get_if<SubTaskEntry>(&*it)) {
+                if (ste->subtaskId == std::to_string(i + 1) && ste->state == "running") {
+                    ste->state = result.success ? "completed" : "failed";
+                    ste->sessionId = result.sessionId;
+                    ste->resultSummary = result.lastAssistantMessage;
+                    if (!result.success && result.error.has_value()) {
+                        ste->errorMessage = *result.error;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Inject result into parent session
+        if (result.success) {
+            std::string summary = result.lastAssistantMessage;
+            if (summary.length() > 500) {
+                summary = summary.substr(0, 500) + "...";
+            }
+            on_chunk("[tool: subtask_" + std::to_string(i + 1) + "] completed\n"
+                     "→ Result: " + summary + "\n");
+
+            session_->appendCustomMessageEntry(
+                "subtask_result",
+                "[tool: subtask_" + std::to_string(i + 1) + "] completed\n"
+                "→ Result: " + result.lastAssistantMessage,
+                false
+            );
+        } else {
+            on_chunk("[tool: subtask_" + std::to_string(i + 1) + "] failed: "
+                     + (result.error.value_or("unknown error")) + "\n");
+
+            session_->appendCustomMessageEntry(
+                "subtask_result",
+                "[tool: subtask_" + std::to_string(i + 1) + "] failed: "
+                + (result.error.value_or("unknown error")),
+                false
+            );
+        }
+    }
+
+    return true;
+}
+
+bool AgentSession::decomposeAndExecute(const std::string& user_input,
+                                        const ChunkCallback& on_chunk,
+                                        std::atomic<bool>* cancel_flag) {
+    // Step 1: Check if this looks like a multi-task request
+    if (!looks_like_multi_task(user_input)) {
+        return false;  // Not a multi-task request, handle normally
+    }
+
+    on_chunk("\n[DECOMPOSE] Detecting subtasks...\n");
+
+    // Step 2: Decompose into subtasks
+    std::vector<std::pair<std::string, std::vector<std::string>>> subtasks;
+    std::string error;
+
+    if (!decomposeIntoSubtasks(user_input, subtasks, error)) {
+        on_chunk("[DECOMPOSE] Failed: " + error + "\n");
+        on_chunk("[DECOMPOSE] Falling back to single-task mode\n");
+        return false;
+    }
+
+    on_chunk("[DECOMPOSE] Found " + std::to_string(subtasks.size()) + " subtask(s)\n");
+
+    // Step 3: Execute subtasks
+    on_chunk("\n[EXECUTE] Starting subtask execution...\n");
+    bool success = executeSubtasks(subtasks, on_chunk, cancel_flag);
+    on_chunk("\n[EXECUTE] Subtask execution " + std::string(success ? "completed" : "interrupted") + "\n");
+
+    return success;
 }
 
 }  // namespace coding_agent

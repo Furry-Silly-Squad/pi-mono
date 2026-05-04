@@ -140,6 +140,31 @@ struct CustomMessageEntry : SessionEntryBase {
 };
 
 // ============================================================================
+// Sub-task entry (tracks subtask state in parent session)
+// ============================================================================
+
+struct SubTaskEntry : SessionEntryBase {
+  std::string type = "subtask";
+  std::string subtaskId;        // "1", "2", "3", ...
+  std::string description;
+  std::string state;            // "pending", "running", "completed", "failed", "skipped"
+  std::string sessionId;        // Child session ID (e.g., "abc123")
+  std::optional<std::string> resultSummary;  // First N chars of last assistant message
+  std::vector<std::string> dependencies;
+  std::optional<std::string> errorMessage;
+};
+
+// ============================================================================
+// Sub-task decomposition entry (stores full decomposition JSON for reference)
+// ============================================================================
+
+struct SubTaskDecompositionEntry : SessionEntryBase {
+  std::string type = "subtask_decomposition";
+  std::string description;
+  nlohmann::json subtasks;  // Full JSON array from LLM
+};
+
+// ============================================================================
 // Session entry — tagged union of all entry types (non-header)
 // ============================================================================
 
@@ -152,7 +177,9 @@ using SessionEntry = std::variant<
     CustomEntry,
     LabelEntry,
     SessionInfoEntry,
-    CustomMessageEntry
+    CustomMessageEntry,
+    SubTaskEntry,
+    SubTaskDecompositionEntry
 >;
 
 // ============================================================================
@@ -326,6 +353,17 @@ class SessionManager {
   /// Append a label change (set or clear a label on an entry).
   std::string appendLabelChange(const std::string& targetId,
                                  const std::optional<std::string>& label);
+
+  /// Append a sub-task entry (tracks subtask state in parent session).
+  std::string appendSubTaskEntry(const std::string& subtaskId,
+                                  const std::string& description,
+                                  const std::string& state,
+                                  const std::string& sessionId,
+                                  const std::vector<std::string>& dependencies);
+
+  /// Append a sub-task decomposition entry (stores full decomposition JSON).
+  std::string appendSubTaskDecompositionEntry(const std::string& description,
+                                               const nlohmann::json& subtasks);
 
   // --------------------------------------------------------------------------
   // Tree traversal

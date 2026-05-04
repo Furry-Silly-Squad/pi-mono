@@ -467,6 +467,32 @@ class AgentSession {
                            const std::vector<std::string>& details = {},
                            CustomMessageDelivery delivery = CustomMessageDelivery::NextTurn);
 
+    // ====================================================================
+    // Sub-Agent Task Delegation (Phase 11)
+    // ====================================================================
+
+    /// Check if the user input looks like a multi-task request requiring decomposition.
+    /// Heuristics: multiple distinct actions, explicit multi-task language, cross-module changes.
+    bool looks_like_multi_task(const std::string& user_input) const;
+
+    /// Decompose a user request into subtasks via LLM call.
+    /// Returns true if decomposition succeeded and subtasks were found.
+    bool decomposeIntoSubtasks(const std::string& user_input,
+                               std::vector<std::pair<std::string, std::vector<std::string>>>& subtasks,
+                               std::string& error);
+
+    /// Execute all subtasks sequentially, collecting results.
+    /// Spawns child coding-agent processes for each subtask.
+    bool executeSubtasks(const std::vector<std::pair<std::string, std::vector<std::string>>>& subtasks,
+                         const ChunkCallback& on_chunk,
+                         std::atomic<bool>* cancel_flag);
+
+    /// Run the full decomposition-and-execution pipeline:
+    /// detect multi-task → decompose → execute subtasks → inject results.
+    bool decomposeAndExecute(const std::string& user_input,
+                             const ChunkCallback& on_chunk,
+                             std::atomic<bool>* cancel_flag);
+
  private:
     // ====================================================================
     // Internal Run Loop

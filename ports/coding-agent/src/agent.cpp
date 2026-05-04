@@ -163,7 +163,7 @@ int run_agent(int argc, char** argv) {
     if (should_run_print_mode(config.value())) {
         return run_print_mode(agent, config->prompt.value_or(""));
     }
-    return run_interactive_mode(agent, config->interactive_debug);
+    return run_interactive_mode(agent, config->interactive_debug, argc, argv);
 }
 
 }  // namespace coding_agent

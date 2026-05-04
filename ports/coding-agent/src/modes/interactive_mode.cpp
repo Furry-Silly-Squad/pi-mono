@@ -3,11 +3,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <csignal>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 
 #include <readline/history.h>
 #include <readline/readline.h>
@@ -29,6 +33,39 @@ const char* COLOR_GREEN  = "\033[0;32m";
 const char* COLOR_YELLOW = "\033[0;33m";
 const char* COLOR_RED    = "\033[0;31m";
 const char* COLOR_RESET  = "\033[0m";
+
+std::optional<std::string> detect_build_dir(const char* argv0) {
+    std::filesystem::path exe_path;
+    char buf[4096];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len > 0) {
+        buf[len] = '\0';
+        exe_path = std::filesystem::path(buf);
+    } else {
+        exe_path = std::filesystem::path(argv0);
+    }
+
+    // exe_path should be like .../ports/coding-agent/build/coding-agent
+    // build dir = exe_path.parent_path()
+    // Check if CMakeCache.txt exists there
+    std::filesystem::path build_dir = exe_path.parent_path();
+    if (std::filesystem::exists(build_dir / "CMakeCache.txt")) {
+        return build_dir.string();
+    }
+
+    // Fallback: check cwd/build/
+    build_dir = std::filesystem::current_path() / "build";
+    if (std::filesystem::exists(build_dir / "CMakeCache.txt")) {
+        return build_dir.string();
+    }
+
+    return std::nullopt;
+}
+
+int run_build_command(const std::string& build_dir) {
+    std::string cmd = "cmake --build \"" + build_dir + "\" --target coding-agent 2>&1";
+    return std::system(cmd.c_str());
+}
 
 bool confirm_destructive_bash_on_tty(const std::string& command) {
     std::cerr << "Destructive bash command requested:\n"
@@ -140,7 +177,9 @@ void print_interactive_turn_debug(const AgentSession& agent) {
 
 }  // namespace
 
-int run_interactive_mode(AgentSession& agent, bool interactive_debug) {
+int run_interactive_mode(AgentSession& agent, bool interactive_debug,
+                         int argc, char** argv) {
+    (void)argc;  // argc is preserved for execvp restart
     struct sigaction sa{};
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
@@ -151,6 +190,14 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug) {
     agent.set_destructive_bash_confirm(confirm_destructive_bash_on_tty);
 
     const auto& cfg = agent.session_config();
+
+    // Detect build directory once at startup
+    static const auto build_dir = detect_build_dir(argv[0]);
+    if (build_dir.has_value()) {
+        std::cout << "[rebuild] Build directory detected: " << build_dir.value() << "\n";
+    }
+
+    bool rebuild_pending = false;
 
     while (true) {
         char* line = readline("> ");
@@ -329,6 +376,92 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug) {
             std::cerr << "Usage: /branch | /branch summary [text|entry-id] | /branch from:<entry-id>\n";
             continue;
         }
+
+        // --- /rebuild command ---
+        if (prompt.starts_with("/rebuild")) {
+            if (!build_dir.has_value()) {
+                std::cerr << "[rebuild] Error: build directory not found. "
+                          << "Please run 'cmake .. && cmake --build .' from the build directory.\n";
+                continue;
+            }
+
+            std::string args = prompt.substr(8);
+            size_t firstNonSpace = args.find_first_not_of(" \t");
+            if (firstNonSpace != std::string::npos) {
+                args = args.substr(firstNonSpace);
+            } else {
+                args.clear();
+            }
+
+            std::string normalized = args;
+            for (char& ch : normalized) {
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            }
+
+            if (normalized == "confirm" || normalized == "yes" || normalized == "y") {
+                std::cout << "[rebuild] Building...\n" << std::flush;
+
+                // Reset SIGINT handler during build so Ctrl-C kills the build
+                struct sigaction sa_build{};
+                sa_build.sa_handler = SIG_DFL;
+                sigemptyset(&sa_build.sa_mask);
+                sigaction(SIGINT, &sa_build, nullptr);
+
+                int result = run_build_command(build_dir.value());
+
+                // Restore signal handler
+                sigaction(SIGINT, &sa, nullptr);
+
+                if (result != 0) {
+                    std::cerr << "[rebuild] Build failed (exit code " << result << ")\n";
+                    continue;
+                }
+
+                std::cout << "[rebuild] Build succeeded. Restarting...\n" << std::flush;
+
+                // execvp replaces the current process
+                execvp(argv[0], argv);
+
+                // If execvp fails
+                std::cerr << "[rebuild] execvp failed: " << strerror(errno) << "\n";
+                continue;
+            }
+
+            if (rebuild_pending) {
+                // Second confirmation - proceed with build
+                std::cout << "[rebuild] Confirming rebuild...\n" << std::flush;
+                rebuild_pending = false;
+                std::cout << "[rebuild] Building...\n" << std::flush;
+
+                struct sigaction sa_build{};
+                sa_build.sa_handler = SIG_DFL;
+                sigemptyset(&sa_build.sa_mask);
+                sigaction(SIGINT, &sa_build, nullptr);
+
+                int result = run_build_command(build_dir.value());
+
+                sigaction(SIGINT, &sa, nullptr);
+
+                if (result != 0) {
+                    std::cerr << "[rebuild] Build failed (exit code " << result << ")\n";
+                    continue;
+                }
+
+                std::cout << "[rebuild] Build succeeded. Restarting...\n" << std::flush;
+                execvp(argv[0], argv);
+                std::cerr << "[rebuild] execvp failed: " << strerror(errno) << "\n";
+                continue;
+            }
+
+            // First invocation - set pending and warn
+            rebuild_pending = true;
+            std::cout << "[rebuild] WARNING: Rebuilding will restart the agent. "
+                      << "Current session will be preserved.\n"
+                      << "[rebuild] Pending rebuild. Type '/rebuild confirm' to proceed.\n";
+            continue;
+        }
+
+        // --- end /rebuild ---
 
         // Reset cancel flag for each new user turn.
         global_cancel_flag.store(false, std::memory_order_release);

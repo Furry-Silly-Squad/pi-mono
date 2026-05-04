@@ -51,7 +51,6 @@ std::string build_system_prompt(
     }
   }
 
-  /*
   out << "\n## Task Delegation (Phase 11)\n\n";
   out << "If the user's request involves multiple distinct tasks (e.g., "
       << "\"implement X, add tests, update docs\"),\n";
@@ -80,7 +79,6 @@ std::string build_system_prompt(
   out << "- If the request is a single task, respond with a single subtask\n";
   out << "- If the request doesn't need decomposition, respond with a single subtask that "
       << "handles the whole request\n";
-      */
 
   return out.str();
 }

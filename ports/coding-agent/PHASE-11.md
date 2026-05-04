@@ -29,23 +29,28 @@ Main Process (coding-agent)
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| `SubTaskEntry` / `SubTaskDecompositionEntry` | ✅ Implemented | In `session_entry.hpp`, variant updated |
+| `SubTaskEntry` / `SubTaskDecompositionEntry` | ✅ Implemented | In `session_entry.hpp`, variant updated, JSON serialization/deserialization |
 | `GpuSemaphore` | ✅ Implemented | File-based lock, PID liveness, stale lock cleanup |
-| `SubAgent::spawn()` | ✅ Implemented | fork/exec, GPU lock, result collection |
+| `SubAgent::spawn()` | ✅ Implemented | fork/exec (Unix) + CreateProcess (Windows), GPU lock, result collection |
 | `decomposeAndExecute()` | ✅ Implemented | Heuristic detection, LLM decomposition, sequential execution |
-| `--gpu-lock-path` CLI flag | ✅ Implemented | Config field exists and is used at runtime |
-| Dependency resolution | ✅ Implemented | `dependencies` field parsed and respected via topological sort |
+| `--gpu-lock-path` CLI flag | ✅ Implemented | Config field parsed and used at runtime |
+| Dependency resolution | ✅ Implemented | `dependencies` field parsed and respected via topological sort (Kahn's algorithm) |
 | DAG validation / cycle detection | ✅ Implemented | Self-dependency, missing dependency, DFS cycle detection |
-| Child process timeout | ✅ Implemented | Polling timeout loop, kill on timeout |
-| `/decompose` command | ✅ Implemented | Explicit trigger for decomposition without heuristic check |
-| `/subtasks` command | ✅ Implemented | Lists subtask status and results |
+| Child process timeout | ✅ Implemented | Polling timeout loop, kill on timeout (30 min default) |
+| `/decompose` command | ✅ Implemented | Explicit trigger via `decomposeAndExecuteExplicit()` |
+| `/subtasks` command | ✅ Implemented | Lists subtask status and results via `listSubtasks()` |
 | Parallel subagent execution | ❌ Not implemented | Sequential only |
-| Multi-server GPU routing | ✅ Implemented | Per-server lock files via URL hash |
+| Multi-server GPU routing | ✅ Implemented | Per-server lock files via URL hash, server field in subtask JSON |
 | Child session filename | ✅ Implemented | `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl` |
-| Binary path resolution | ⚠️ Partial | Hardcoded `"coding-agent"` — should resolve from argv[0] |
-| `--context-file` CLI flag | ❌ Not implemented | Referenced in subagent spawn but not parsed in config |
-| Decomposition JSON format mismatch | ⚠️ Bug | System prompt uses `{decomposition: {...}}` but code parses `{description: ..., subtasks: ...}` |
-| Child output streaming | ❌ Not implemented | Child output not streamed to parent |
+| Binary path resolution | ✅ Implemented | Resolved from `argv[0]` in `agent.cpp`, falls back to `"coding-agent"` in PATH |
+| `--context-file` CLI flag | ✅ Implemented | Parsed in `config.cpp`, passed to child processes |
+| Decomposition JSON format mismatch | ✅ Fixed | Code handles both nested `{decomposition: {...}}` and flat `{description, subtasks}` formats |
+| Child output streaming | ❌ Not implemented | Child output not streamed to parent; only final result captured |
+| System prompt Task Delegation section | ❌ Commented out | Task delegation instructions in `system_prompt.cpp` are wrapped in `/* */` |
+| `ServerConfigStore` | ✅ Implemented | Loads from `~/.pi/servers.json`, provides `findServer()`, `findServerByUrl()`, `getPromptDescription()` |
+| `subagentBinaryPath` config | ✅ Implemented | Set from `argv[0]` in `agent.cpp`, used in `executeSubtasks()` |
+| `decomposeAndExecuteExplicit()` | ✅ Implemented | Explicit decomposition without heuristic check |
+| `listSubtasks()` | ✅ Implemented | Lists all subtask entries from current session |
 
 ## Decomposition Format
 
@@ -139,7 +144,7 @@ Rules:
 The main agent decides whether to decompose based on heuristics (implemented in `looks_like_multi_task()`):
 
 1. **Clause counting**: Counts distinct imperative clauses separated by commas, semicolons, or newlines. Multi-task if `clause_count >= 3` or `comma_count >= 2`.
-2. **No explicit command**: There is no `/decompose` command — only heuristic detection.
+2. **Explicit trigger**: `/decompose` command available for explicit decomposition without heuristic check.
 
 If the request is a single coherent task, the main agent handles it directly without decomposition.
 
@@ -487,13 +492,13 @@ The LLM can produce `dependencies: ["1"]` in the JSON, and `executeSubtasks()` n
 
 `SubAgent::spawn()` uses a polling loop with `waitpid(WNOHANG)` (Unix) or `WaitForSingleObject` (Windows) and a configurable `maxSubtaskDurationMs` parameter (default 30 minutes). On timeout, the child process is killed and an error is reported.
 
-### 6. Binary Path Resolution ⚠️ Partial
+### 6. Binary Path Resolution ✅ Fixed
 
-`std::string binaryPath = "coding-agent";` — the child is launched via `execv("coding-agent", ...)` which assumes `coding-agent` is in PATH. Should resolve from `argv[0]` or a config option for reliability.
+Binary path is resolved from `argv[0]` in `agent.cpp` (lines 166-184) and stored in `config_.subagentBinaryPath`. Falls back to `"coding-agent"` in PATH if resolution fails. Used in `executeSubtasks()` via the `binaryPath` variable.
 
 ### 7. Child Session Filename Now Matches Spec ✅ Fixed
 
-Child session files now follow the format: `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl`. This makes it easy to correlate child sessions with their parent and find the correct subtask result.
+Child session files follow the format: `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl`. This makes it easy to correlate child sessions with their parent and find the correct subtask result.
 
 ### 8. UI: TuiAnimation State Confusion During Subtask Execution
 
@@ -516,25 +521,30 @@ The user has no way to see the child's progress. The child's TUI output is disca
 **What should happen:**
 - Show `[SUBTASK 1/N] Running... (waiting for completion)` with a distinct state (not "generating").
 - Optionally stream the child's output back to the parent via a pipe, so the user can see tool calls and file edits in real-time.
-- Add a `/subtasks` command to list subtask status and results.
 
-### 9. No `/decompose` Command
+### 9. `/decompose` Command ✅ Implemented
 
-The system prompt mentions `/decompose` as an explicit trigger, but it is not implemented. Decomposition is purely heuristic-based via `looks_like_multi_task()`.
+The `/decompose <text>` command is now implemented in `interactive_mode.cpp` (lines 463-510). It calls `decomposeAndExecuteExplicit()` which skips the heuristic check and always attempts LLM decomposition.
 
-### 10. No `/subtasks` Command
+### 10. `/subtasks` Command ✅ Implemented
 
-There is no way to list active subtasks, view their status, or see results without parsing the session file.
+The `/subtasks` command is implemented in `interactive_mode.cpp` (lines 515-565). It calls `listSubtasks()` which iterates over `SubTaskEntry` entries in the current session and displays their state, description, result summary, and error messages.
 
-### 11. Decomposition JSON Format Mismatch ⚠️ Bug
+### 11. Decomposition JSON Format Mismatch ✅ Fixed
 
-The system prompt instructs the LLM to respond with `{decomposition: {description, subtasks}}` but `decomposeIntoSubtasks()` parses `{description, subtasks}` (without the `decomposition` wrapper). This means the LLM output will fail to parse unless it ignores the prompt format.
+`decomposeIntoSubtasks()` now handles both JSON formats:
+1. Nested: `{ "decomposition": { "description": ..., "subtasks": [...] } }`
+2. Flat: `{ "description": ..., "subtasks": [...] }`
 
-**Fix needed:** Either update the system prompt to match the code's expected format, or update the code to handle the nested `decomposition` wrapper.
+The code checks for the `decomposition` wrapper first, then falls back to the flat format. This makes the system resilient to whatever format the LLM produces.
 
-### 12. `--context-file` CLI Flag Missing ❌
+### 12. `--context-file` CLI Flag ✅ Implemented
 
-`SubAgent::spawn()` adds `--context-file` arguments to the child command line, but `config.cpp` does not parse this flag. The child process will fail with "Unknown argument: --context-file".
+`config.cpp` parses `--context-file` (line 424-425) and stores values in `config_.context_files`. `SubAgent::spawn()` passes these as `--context-file` arguments to child processes.
+
+### 13. System Prompt Task Delegation Section ⚠️ Commented Out
+
+The Task Delegation section in `system_prompt.cpp` (lines 55-81) is wrapped in `/* */` comments. The system prompt infrastructure supports it, but the LLM never sees these instructions. This is the **only remaining blocker** for end-to-end functionality — uncommenting the section makes the feature work.
 
 ## Future Considerations (Not in Phase 11)
 
@@ -542,28 +552,26 @@ The system prompt instructs the LLM to respond with `{decomposition: {descriptio
 - **Inter-agent communication**: Sub-agents can read/write shared files during execution
 - **Task graph visualization**: Display subtask DAG in TUI
 - **Retry logic**: Retry failed subtasks automatically
-- **Timeout per subtask**: Kill child if it runs too long (e.g., 30 min)
-- **`/subtasks` command**: List active subtasks and their status
-- **`/subtask <id>` command**: View details of a specific subtask
-- **`/decompose` command**: Explicitly trigger decomposition
 - **Child output streaming**: Pipe child stdout/stderr back to parent for real-time visibility
 - **Cross-machine GPU locks**: Network-based semaphore for multi-server setups
+- **`/subtask <id>` command**: View details of a specific subtask
 
 ## Risks and Mitigations
 
 | Risk | Mitigation | Status |
 |------|-----------|--------|
-| Child process hangs indefinitely | GPU semaphore timeout + max execution time per subtask | ✅ Implemented |
-| Child process fails silently | Check exit code, capture stderr | ✅ Implemented |
+| Child process hangs indefinitely | GPU semaphore timeout + max execution time per subtask (30 min) | ✅ Implemented |
+| Child process fails silently | Check exit code, capture stderr, report error in session | ✅ Implemented |
 | Result summary too short for context | Configurable result summary length (default 500 chars) | ✅ Implemented |
 | Too many subtasks overwhelm GPU | Sequential execution (one at a time) | ✅ Implemented |
 | Decomposition produces invalid JSON | Fallback to single subtask if JSON parse fails | ✅ Implemented |
 | Subtask dependencies create deadlock | Validate DAG before execution, detect cycles | ✅ Implemented |
 | GPU lock blocks across machines | File-based lock does not work cross-machine | ❌ Not addressed |
 | No visibility into child progress | Child output not streamed to parent | ❌ Not implemented |
-| Binary not in PATH | Hardcoded "coding-agent" string | ⚠️ Partial |
-| Decomposition JSON format mismatch | System prompt and code disagree on format | ⚠️ Bug |
-| `--context-file` not parsed | Child command line includes flag but config doesn't parse it | ❌ Bug |
+| Binary not in PATH | Resolved from `argv[0]`, falls back to PATH | ✅ Implemented |
+| Decomposition JSON format mismatch | Code handles both nested and flat formats | ✅ Implemented |
+| `--context-file` not parsed | Flag parsed in config.cpp, passed to children | ✅ Implemented |
+| System prompt instructions inactive | Task Delegation section commented out in system_prompt.cpp | ⚠️ Blocker |
 
 ## Testing Strategy
 

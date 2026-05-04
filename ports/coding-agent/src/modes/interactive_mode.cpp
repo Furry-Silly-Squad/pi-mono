@@ -229,6 +229,8 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
                       << "  /thinking          Cycle thinking level\n"
                       << "  /queues            Show steering and follow-up queue state\n"
                       << "  /clear-queues      Clear all pending queues\n"
+                      << "  /rebuild           Rebuild agent (requires confirmation)\n"
+                      << "  /rebuild --force   Rebuild agent without confirmation\n"
                       << "  /new               Create a new session\n"
                       << "  /branch            Branch current session\n"
                       << "  /branch summary [text|id]  Branch with summary\n"
@@ -398,7 +400,8 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
                 ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
             }
 
-            if (normalized == "confirm" || normalized == "yes" || normalized == "y") {
+            // --- helper: build and restart ---
+            auto do_rebuild = [&]() {
                 std::cout << "[rebuild] Building...\n" << std::flush;
 
                 // Reset SIGINT handler during build so Ctrl-C kills the build
@@ -414,7 +417,7 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
 
                 if (result != 0) {
                     std::cerr << "[rebuild] Build failed (exit code " << result << ")\n";
-                    continue;
+                    return;
                 }
 
                 std::cout << "[rebuild] Build succeeded. Restarting...\n" << std::flush;
@@ -424,6 +427,16 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
 
                 // If execvp fails
                 std::cerr << "[rebuild] execvp failed: " << strerror(errno) << "\n";
+            };
+
+            // --force: skip confirmation entirely
+            if (normalized == "force" || normalized == "--force") {
+                do_rebuild();
+                continue;
+            }
+
+            if (normalized == "confirm" || normalized == "yes" || normalized == "y") {
+                do_rebuild();
                 continue;
             }
 
@@ -431,25 +444,7 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
                 // Second confirmation - proceed with build
                 std::cout << "[rebuild] Confirming rebuild...\n" << std::flush;
                 rebuild_pending = false;
-                std::cout << "[rebuild] Building...\n" << std::flush;
-
-                struct sigaction sa_build{};
-                sa_build.sa_handler = SIG_DFL;
-                sigemptyset(&sa_build.sa_mask);
-                sigaction(SIGINT, &sa_build, nullptr);
-
-                int result = run_build_command(build_dir.value());
-
-                sigaction(SIGINT, &sa, nullptr);
-
-                if (result != 0) {
-                    std::cerr << "[rebuild] Build failed (exit code " << result << ")\n";
-                    continue;
-                }
-
-                std::cout << "[rebuild] Build succeeded. Restarting...\n" << std::flush;
-                execvp(argv[0], argv);
-                std::cerr << "[rebuild] execvp failed: " << strerror(errno) << "\n";
+                do_rebuild();
                 continue;
             }
 
@@ -457,7 +452,7 @@ int run_interactive_mode(AgentSession& agent, bool interactive_debug,
             rebuild_pending = true;
             std::cout << "[rebuild] WARNING: Rebuilding will restart the agent. "
                       << "Current session will be preserved.\n"
-                      << "[rebuild] Pending rebuild. Type '/rebuild confirm' to proceed.\n";
+                      << "[rebuild] Pending rebuild. Type '/rebuild confirm' or '/rebuild --force' to proceed.\n";
             continue;
         }
 

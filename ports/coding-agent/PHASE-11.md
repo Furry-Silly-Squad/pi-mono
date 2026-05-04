@@ -37,8 +37,8 @@ Main Process (coding-agent)
 | Dependency resolution | ✅ Implemented | `dependencies` field parsed and respected via topological sort |
 | DAG validation / cycle detection | ✅ Implemented | Self-dependency, missing dependency, DFS cycle detection |
 | Child process timeout | ✅ Implemented | Polling timeout loop, kill on timeout |
-| `/decompose` command | ❌ Not implemented | Only heuristic-based detection |
-| `/subtasks` command | ❌ Not implemented | |
+| `/decompose` command | ✅ Implemented | Explicit trigger for decomposition without heuristic check |
+| `/subtasks` command | ✅ Implemented | Lists subtask status and results |
 | Parallel subagent execution | ❌ Not implemented | Sequential only |
 | Multi-server GPU routing | ✅ Implemented | Per-server lock files via URL hash |
 | Child session filename | ✅ Implemented | `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl` |

@@ -267,14 +267,10 @@ std::string fileEntryToJsonLine(const FileEntry& raw) {
       raw);
 }
 
-std::string nowTimestamp() {
+std::string numericTimestamp() {
   const auto now = std::chrono::system_clock::now();
-  const auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  struct tm tm_buf;
-  gmtime_r(&time_t_now, &tm_buf);
-  std::ostringstream oss;
-  oss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S");
-  return oss.str();
+  const auto ms = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
+  return std::to_string(ms.time_since_epoch().count());
 }
 
 std::string sessionIdPrefix() {
@@ -375,39 +371,71 @@ bool migrateToCurrentVersion(std::vector<FileEntry>& entries) {
 std::optional<std::string> findMostRecentSession(const std::string& sessionDir) {
   namespace fs = std::filesystem;
   if (!fs::exists(sessionDir) || !fs::is_directory(sessionDir)) {
+    std::cerr << "[session] findMostRecentSession: session directory does not exist: " << sessionDir << "\n" << std::flush;
     return std::nullopt;
   }
 
-  std::optional<std::pair<std::filesystem::path, std::filesystem::file_time_type>> latest;
+  // Collect all .jsonl files first for debug output
+  std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> candidates;
+  int totalJsonlFiles = 0;
 
   for (const auto& entry : fs::directory_iterator(sessionDir)) {
     if (!entry.is_regular_file() || entry.path().extension() != ".jsonl") {
       continue;
     }
+    totalJsonlFiles++;
+    candidates.push_back({entry.path(), entry.last_write_time()});
+  }
 
+  if (totalJsonlFiles == 0) {
+    std::cerr << "[session] findMostRecentSession: no .jsonl files found in " << sessionDir << "\n" << std::flush;
+    return std::nullopt;
+  }
+
+  std::optional<std::pair<std::filesystem::path, std::filesystem::file_time_type>> latest;
+
+  for (const auto& [path, mtime] : candidates) {
     // Validate: first line must be a session header with an id
-    std::ifstream check(entry.path());
+    std::ifstream check(path);
     if (!check.is_open()) continue;
 
     std::string firstLine;
-    if (!std::getline(check, firstLine) || firstLine.empty()) continue;
-
-    try {
-      nlohmann::json header = nlohmann::json::parse(firstLine, nullptr, false);
-      if (header.is_discarded()) continue;
-      if (header.value("type", "") != "session") continue;
-      if (!header.contains("id") || !header.at("id").is_string()) continue;
-    } catch (...) {
+    if (!std::getline(check, firstLine) || firstLine.empty()) {
+      std::cerr << "[session] findMostRecentSession: skipping (empty), " << path << "\n" << std::flush;
       continue;
     }
 
-    const auto mtime = entry.last_write_time();
+    try {
+      nlohmann::json header = nlohmann::json::parse(firstLine, nullptr, false);
+      if (header.is_discarded()) {
+        std::cerr << "[session] findMostRecentSession: skipping (invalid JSON), " << path << "\n" << std::flush;
+        continue;
+      }
+      if (header.value("type", "") != "session") {
+        std::cerr << "[session] findMostRecentSession: skipping (type != session), " << path << "\n" << std::flush;
+        continue;
+      }
+      if (!header.contains("id") || !header.at("id").is_string()) {
+        std::cerr << "[session] findMostRecentSession: skipping (no id), " << path << "\n" << std::flush;
+        continue;
+      }
+    } catch (const std::exception& e) {
+      std::cerr << "[session] findMostRecentSession: skipping (parse error: " << e.what() << "), " << path << "\n" << std::flush;
+      continue;
+    }
+
     if (!latest.has_value() || mtime > latest->second) {
-      latest = {entry.path(), mtime};
+      latest = {path, mtime};
     }
   }
 
-  return latest.has_value() ? std::make_optional(latest->first.string()) : std::nullopt;
+  if (latest.has_value()) {
+    std::cerr << "[session] findMostRecentSession: selected " << latest->first << "\n" << std::flush;
+    return std::make_optional(latest->first.string());
+  }
+
+  std::cerr << "[session] findMostRecentSession: no valid session files found in " << sessionDir << "\n" << std::flush;
+  return std::nullopt;
 }
 
 std::vector<FileEntry> loadEntriesFromFile(const std::string& filePath) {
@@ -442,7 +470,7 @@ std::vector<FileEntry> loadEntriesFromFile(const std::string& filePath) {
         SessionEntry entry;
         const std::string id = j.value("id", "");
         const std::string parentId = j.value("parentId", j.value("parent_id", ""));
-        const std::string timestamp = j.value("timestamp", nowTimestamp());
+        const std::string timestamp = j.value("timestamp", numericTimestamp());
 
         if (type == "message") {
           SessionMessageEntry msg;
@@ -805,10 +833,13 @@ std::unique_ptr<SessionManager> SessionManager::open(const std::string& path,
 std::unique_ptr<SessionManager> SessionManager::continueRecent(const std::string& cwd,
                                                                 const std::string& sessionDir) {
   const std::string dir = sessionDir.empty() ? session_directory_for_cwd(cwd) : sessionDir;
+  std::cerr << "[session] continueRecent: looking for most recent session in: " << dir << "\n" << std::flush;
   const std::optional<std::string> mostRecent = findMostRecentSession(dir);
   if (mostRecent.has_value()) {
+    std::cerr << "[session] continueRecent: resuming session: " << mostRecent.value() << "\n" << std::flush;
     return open(mostRecent.value(), dir, cwd);
   }
+  std::cerr << "[session] continueRecent: no existing session found, creating new session in: " << dir << "\n" << std::flush;
   return create(cwd, dir);
 }
 
@@ -841,7 +872,7 @@ std::unique_ptr<SessionManager> SessionManager::forkFrom(const std::string& sour
   }
 
   const std::string newSessionId = sessionIdPrefix() + generateFreshId();
-  const std::string timestamp = nowTimestamp();
+  const std::string timestamp = numericTimestamp();
   const std::string fileTimestamp = timestamp;
   const std::string newSessionFile = (std::filesystem::path(dir) / (fileTimestamp + "_" + newSessionId + ".jsonl")).string();
 
@@ -910,7 +941,7 @@ std::unique_ptr<SessionManager> SessionManager::openBySessionId(const std::strin
 
 std::optional<std::string> SessionManager::newSession(const NewSessionOptions& options) {
   sessionId_ = options.id.value_or(sessionIdPrefix() + generateFreshId());
-  const std::string timestamp = nowTimestamp();
+  const std::string timestamp = numericTimestamp();
 
   SessionHeader header;
   header.type = "session";
@@ -940,10 +971,12 @@ void SessionManager::setSessionFile(const std::string& path) {
   sessionFile_ = fs::path(path).string();
 
   if (fs::exists(sessionFile_.value())) {
+    std::cerr << "[session] setSessionFile: opening existing session: " << sessionFile_.value() << "\n" << std::flush;
     fileEntries_ = loadEntriesFromFile(sessionFile_.value());
 
     // If file was empty or corrupted, start fresh
     if (fileEntries_.empty()) {
+      std::cerr << "[session] setSessionFile: file was empty or corrupted, starting fresh session\n" << std::flush;
       newSession();
       // Preserve the explicit path from the caller
       sessionFile_ = fs::path(path).string();
@@ -956,19 +989,26 @@ void SessionManager::setSessionFile(const std::string& path) {
     for (const auto& raw : fileEntries_) {
       if (auto* header = std::get_if<SessionHeader>(&raw)) {
         sessionId_ = header->id;
+        std::cerr << "[session] setSessionFile: loaded session id=" << sessionId_
+                  << " version=" << header->version
+                  << " cwd=" << header->cwd
+                  << " entries=" << fileEntries_.size()
+                  << "\n" << std::flush;
         break;
       }
     }
 
     // Migrate if needed
-    if (!migrateToCurrentVersion(fileEntries_)) {
-      // No migration needed, but still build index
+    if (migrateToCurrentVersion(fileEntries_)) {
+      std::cerr << "[session] setSessionFile: migrations applied, rewriting file\n" << std::flush;
+      _rewriteFile();
     }
 
     _buildIndex();
     flushed_ = true;
   } else {
     // File doesn't exist — create new session at this path
+    std::cerr << "[session] setSessionFile: file does not exist, creating new session: " << sessionFile_.value() << "\n" << std::flush;
     newSession();
     sessionFile_ = fs::path(path).string();
   }
@@ -1039,7 +1079,7 @@ std::string SessionManager::appendMessage(const ChatMessage& message) {
   entry.type = "message";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = leafId_.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.message = message;
   entry.message.entry_id = entry.id;
   const std::string newId = entry.id;
@@ -1052,7 +1092,7 @@ std::string SessionManager::appendThinkingLevelChange(const std::string& thinkin
   entry.type = "thinking_level_change";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = leafId_.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.thinkingLevel = thinkingLevel;
   const std::string newId = entry.id;
   _appendEntry(std::move(entry));
@@ -1064,7 +1104,7 @@ std::string SessionManager::appendModelChange(const std::string& provider, const
   entry.type = "model_change";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = leafId_.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.provider = provider;
   entry.modelId = modelId;
   const std::string newId = entry.id;
@@ -1081,7 +1121,7 @@ std::string SessionManager::appendCompaction(const std::string& summary,
   entry.type = "compaction";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = leafId_.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.summary = summary;
   entry.firstKeptEntryId = firstKeptEntryId;
   entry.tokensBefore = tokensBefore;
@@ -1098,7 +1138,7 @@ std::string SessionManager::appendCustomEntry(const std::string& customType,
   entry.type = "custom";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = leafId_.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.customType = customType;
   entry.data = data;
   const std::string newId = entry.id;
@@ -1114,7 +1154,7 @@ std::string SessionManager::appendCustomMessageEntry(const std::string& customTy
   entry.type = "custom_message";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = leafId_.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.customType = customType;
   entry.content = content;
   entry.display = display;
@@ -1129,7 +1169,7 @@ std::string SessionManager::appendSessionInfo(const std::string& name) {
   entry.type = "session_info";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = leafId_.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.name = name.empty() ? std::nullopt : std::make_optional(name);
   const std::string newId = entry.id;
   _appendEntry(std::move(entry));
@@ -1144,7 +1184,7 @@ std::string SessionManager::appendBranchSummary(const std::string& fromId,
   entry.type = "branch_summary";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = leafId_.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.fromId = fromId;
   entry.summary = summary;
   entry.details = details;
@@ -1164,7 +1204,7 @@ std::string SessionManager::appendLabelChange(const std::string& targetId,
   entry.type = "label";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = leafId_.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.targetId = targetId;
   entry.label = label;
   const std::string newId = entry.id;
@@ -1328,7 +1368,7 @@ std::string SessionManager::branchWithSummary(const std::optional<std::string>& 
   entry.type = "branch_summary";
   entry.id = generateIdAvoiding(byId_);
   entry.parentId = branchFromId.value_or("");
-  entry.timestamp = nowTimestamp();
+  entry.timestamp = numericTimestamp();
   entry.fromId = fromId;
   entry.summary = summary;
   entry.details = details;
@@ -1356,7 +1396,7 @@ std::optional<std::string> SessionManager::createBranchedSession(const std::stri
   }
 
   const std::string newSessionId = sessionIdPrefix() + generateFreshId();
-  const std::string timestamp = nowTimestamp();
+  const std::string timestamp = numericTimestamp();
   const std::string fileTimestamp = timestamp;
   const std::string newSessionFile = (std::filesystem::path(sessionDir_) / (fileTimestamp + "_" + newSessionId + ".jsonl")).string();
 
@@ -1474,10 +1514,9 @@ void SessionManager::_persist(const SessionEntry& entry) {
   }
 
   if (!flushed_) {
-    // Flush all pending entries
+    // Flush all pending entries (including header)
     std::ofstream out(sessionFile_.value(), std::ios::app);
     for (const auto& raw : fileEntries_) {
-      if (std::holds_alternative<SessionHeader>(raw)) continue;
       out << fileEntryToJsonLine(raw) << "\n";
     }
     flushed_ = true;

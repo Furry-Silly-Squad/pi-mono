@@ -8,6 +8,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "gpu_semaphore.hpp"
@@ -33,7 +34,8 @@ SubAgentResult SubAgent::spawn(
     const std::string& parentSessionDir,
     const std::string& gpuLockPath,
     int maxTokens,
-    float temperature
+    float temperature,
+    int maxSubtaskDurationMs
 ) {
   SubAgentResult result;
   result.sessionPath = "";
@@ -145,8 +147,23 @@ SubAgentResult SubAgent::spawn(
     return result;
   }
 
-  // Wait for child to complete
-  WaitForSingleObject(pi.hProcess, INFINITE);
+  // Wait for child to complete with timeout
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(maxSubtaskDurationMs);
+  bool timedOut = false;
+
+  while (true) {
+    DWORD ret = WaitForSingleObject(pi.hProcess, 500);
+    if (ret == WAIT_OBJECT_0) {
+      break;  // Child exited normally
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      timedOut = true;
+      // Kill the child process
+      TerminateProcess(pi.hProcess, 1);
+      break;
+    }
+  }
 
   DWORD exitCode;
   GetExitCodeProcess(pi.hProcess, &exitCode);
@@ -180,9 +197,32 @@ SubAgentResult SubAgent::spawn(
     _exit(127);
   }
 
-  // Parent process: wait for child
-  int status;
-  waitpid(pid, &status, 0);
+  // Parent process: wait for child with timeout
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(maxSubtaskDurationMs);
+  int status = 0;
+  bool timedOut = false;
+
+  while (true) {
+    int ret = waitpid(pid, &status, WNOHANG);
+    if (ret == pid) {
+      break;  // Child exited normally
+    }
+    if (ret == -1) {
+      // Error (e.g., ECHILD if child already reaped)
+      break;
+    }
+    // ret == 0: child still running
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      timedOut = true;
+      // Kill the child process group to avoid zombies
+      kill(-pid, SIGKILL);
+      // Reap the zombie
+      waitpid(pid, &status, 0);
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  }
 
   if (WIFEXITED(status)) {
     result.exitCode = WEXITSTATUS(status);
@@ -196,7 +236,11 @@ SubAgentResult SubAgent::spawn(
   GpuSemaphore::release(gpuLockPath);
 
   // Read results from child session
-  if (result.exitCode == 0 && fs::exists(result.sessionPath)) {
+  if (timedOut) {
+    result.error = "Child process timed out after " + std::to_string(maxSubtaskDurationMs / 1000) + "s";
+    result.exitCode = -1;
+    result.success = false;
+  } else if (result.exitCode == 0 && fs::exists(result.sessionPath)) {
     result.lastAssistantMessage = readLastAssistantMessage(result.sessionPath);
     result.success = !result.lastAssistantMessage.empty();
   } else {

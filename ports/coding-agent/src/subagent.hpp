@@ -28,7 +28,7 @@ struct ServerConfig {
 class SubAgent {
  public:
   /// Spawn a child coding-agent process for a subtask.
-  /// Blocks until the child completes.
+  /// Blocks until the child completes or the timeout expires.
   ///
   /// @param binaryPath Path to the coding-agent binary.
   /// @param subtaskDescription Natural language description of the subtask.
@@ -38,6 +38,7 @@ class SubAgent {
   /// @param gpuLockPath Path to GPU semaphore lock file.
   /// @param maxTokens Maximum tokens for the child process.
   /// @param temperature Temperature for the child process.
+  /// @param maxSubtaskDurationMs Maximum allowed duration in milliseconds (default 30 min).
   /// @return SubAgentResult with session info and exit status.
   static SubAgentResult spawn(
       const std::string& binaryPath,
@@ -47,7 +48,8 @@ class SubAgent {
       const std::string& parentSessionDir,
       const std::string& gpuLockPath,
       int maxTokens,
-      float temperature
+      float temperature,
+      int maxSubtaskDurationMs = 1800000
   );
 
   /// Read the last assistant message from a session file.

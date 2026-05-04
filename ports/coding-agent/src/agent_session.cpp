@@ -1555,8 +1555,21 @@ bool AgentSession::executeSubtasks(const std::vector<std::pair<std::string, std:
     // For now, use the current executable path
     std::string binaryPath = "coding-agent";  // Should be resolved from argv[0] in production
 
-    // GPU lock path
-    std::string gpuLockPath = config_.cwd + "/.pi/gpu.lock";
+    // Determine GPU lock path: use config if set, otherwise derive from server URL
+    // to ensure different servers get different lock files (critical for multi-GPU setups).
+    std::string gpuLockPath;
+    if (!config_.gpu_lock_path.empty()) {
+        gpuLockPath = config_.gpu_lock_path;
+    } else {
+        // Derive a unique lock path per server by hashing the base URL.
+        // This prevents lock conflicts when running subagents on different machines
+        // connecting to different GPUs.
+        const std::string serverKey = config_.base_url.empty() ? "default" : config_.base_url;
+        std::hash<std::string> hasher;
+        const size_t hash = hasher(serverKey);
+        const std::string defaultDir = config_.cwd + "/.pi";
+        gpuLockPath = defaultDir + "/gpu-" + std::to_string(hash) + ".lock";
+    }
     namespace fs = std::filesystem;
     fs::create_directories(fs::path(gpuLockPath).parent_path());
 
@@ -1601,7 +1614,7 @@ bool AgentSession::executeSubtasks(const std::vector<std::pair<std::string, std:
 
         on_chunk("\n[SUBTASK " + std::to_string(i + 1) + "/" + std::to_string(subtasks.size()) + "] " + desc + "\n");
 
-        // Spawn child process
+        // Spawn child process (default 30 min timeout)
         SubAgentResult result = SubAgent::spawn(
             binaryPath,
             desc,
@@ -1610,7 +1623,8 @@ bool AgentSession::executeSubtasks(const std::vector<std::pair<std::string, std:
             parentSessionDir,
             gpuLockPath,
             config_.max_tokens,
-            config_.temperature
+            config_.temperature,
+            1800000  // 30 minutes
         );
 
         // Update subtask state

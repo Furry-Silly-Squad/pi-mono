@@ -33,8 +33,9 @@ AgentSessionConfig make_session_config(const Config& c) {
     cfg.model                      = c.model;
     cfg.api_key                    = c.api_key;
     cfg.cwd                        = c.cwd;
-    cfg.system_prompt_path         = c.system_prompt_path;
-    cfg.append_system_prompts      = c.append_system_prompts;
+    cfg.gpu_lock_path                = c.gpu_lock_path;
+    cfg.system_prompt_path           = c.system_prompt_path;
+    cfg.append_system_prompts        = c.append_system_prompts;
     cfg.session_id                 = c.session_id;
     cfg.max_tokens                 = c.max_tokens;
     cfg.context_size               = c.context_size;

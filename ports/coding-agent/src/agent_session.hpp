@@ -187,6 +187,7 @@ struct AgentSessionConfig {
     std::string model;
     std::string api_key;
     std::string cwd;
+    std::string gpu_lock_path;  // Sub-agent GPU lock file path (empty = auto-derived from base_url)
     std::optional<std::string> system_prompt_path;
     std::vector<std::string> append_system_prompts;
     std::optional<std::string> session_id;

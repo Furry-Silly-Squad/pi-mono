@@ -46,6 +46,8 @@ struct Config {
   int retry_timeout_ms = 30000;
   /// Sub-agent GPU lock file path (default: <cwd>/.pi/gpu.lock).
   std::string gpu_lock_path;
+  /// Extra context files to pass to child sub-agents.
+  std::vector<std::string> context_files;
 };
 
 std::optional<Config> parse_config(int argc, char** argv, std::string& error);

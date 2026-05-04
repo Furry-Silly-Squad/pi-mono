@@ -40,9 +40,12 @@ Main Process (coding-agent)
 | `/decompose` command | ❌ Not implemented | Only heuristic-based detection |
 | `/subtasks` command | ❌ Not implemented | |
 | Parallel subagent execution | ❌ Not implemented | Sequential only |
-| Multi-server GPU routing | ❌ Partially implemented | Single global lock file per server hash |
+| Multi-server GPU routing | ✅ Implemented | Per-server lock files via URL hash |
 | Child session filename | ✅ Implemented | `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl` |
 | Binary path resolution | ⚠️ Partial | Hardcoded `"coding-agent"` — should resolve from argv[0] |
+| `--context-file` CLI flag | ❌ Not implemented | Referenced in subagent spawn but not parsed in config |
+| Decomposition JSON format mismatch | ⚠️ Bug | System prompt uses `{decomposition: {...}}` but code parses `{description: ..., subtasks: ...}` |
+| Child output streaming | ❌ Not implemented | Child output not streamed to parent |
 
 ## Decomposition Format
 
@@ -126,7 +129,7 @@ Rules:
 - Dependencies must form a DAG (no cycles)
 - Priority is used for execution order (lower number = execute first)
 - Context files are files the sub-agent should read before starting
-- Expected artifacts are files the sub-agent is expected to create/modify
+- Expected artifacts are files the sub-agent is expected to create or modify
 - If the request is a single task, respond with a single subtask
 - If the request doesn't need decomposition, respond with a single subtask that handles the whole request
 ```
@@ -205,10 +208,33 @@ The main agent's llama-cpp connection details (host, port, model) are the defaul
 
 ```cpp
 struct ServerConfig {
-  std::string baseUrl;       // e.g. "http://127.0.0.1:8080"
-  std::string modelId;       // model used by parent
-  std::string apiKey;        // if required
-  std::vector<std::string> contextFiles;
+  std::string id;             // Unique identifier (e.g., "laptop-gpu")
+  std::string name;           // Human-readable name (e.g., "MacBook M3 GPU")
+  std::string baseUrl;        // Server endpoint (e.g., "http://127.0.0.1:8080")
+  std::string apiKey;         // API key (empty if not required)
+  std::string modelId;        // Default model for this server
+  int contextLength = 8192;   // Max context window
+  int maxOutputTokens = 4096; // Max output tokens per call
+  std::string description;    // Free-text description for LLM routing decisions
+  std::vector<std::string> capabilities;
+  std::vector<std::string> preferredFor;
+  bool gpu = true;            // Whether this server has GPU acceleration
+  std::vector<std::string> contextFiles;  // Files to pass to the sub-agent
+};
+```
+
+### ServerConfigStore
+
+A `ServerConfigStore` class loads servers from `~/.pi/servers.json`:
+
+```cpp
+class ServerConfigStore {
+public:
+    static std::optional<ServerConfigStore> load(const std::string& homeDir = "");
+    const std::vector<ServerConfig>& getServers() const;
+    std::optional<ServerConfig> findServer(const std::string& id) const;
+    std::optional<ServerConfig> findServerByUrl(const std::string& url) const;
+    std::string getPromptDescription() const;
 };
 ```
 
@@ -223,9 +249,9 @@ When the llama-cpp provider has exactly **one server** in its servers list, or w
 
 This means that in the common single-server case, the sub-agent invocation is nearly identical to running the agent in interactive mode (same binary, same model, same server), but with the added benefit of decomposition: the parent orchestrates multiple focused subtasks instead of one monolithic request.
 
-### Multi-Server (Future)
+### Multi-Server
 
-When multiple servers are configured, the parent can route subtasks to different servers by specifying a `server` field in the subtask decomposition JSON. This is out of scope for Phase 11 but the `ServerConfig` module is designed to support it.
+When multiple servers are configured in `~/.pi/servers.json`, the parent can route subtasks to different servers by specifying a `server` field in the subtask decomposition JSON. The `ServerConfigStore` is loaded from config and used in `executeSubtasks()` to resolve server IDs.
 
 ## Sub-Agent Spawn Logic
 
@@ -255,7 +281,8 @@ class SubAgent {
       const std::string& parentSessionDir,
       const std::string& gpuLockPath,
       int maxTokens,
-      float temperature
+      float temperature,
+      int maxSubtaskDurationMs = 1800000
   );
 
   /// Read the last assistant message from a session file.
@@ -271,7 +298,8 @@ coding-agent \
   --base-url http://127.0.0.1:8080 \
   --model <model-id> \
   --api-key <api-key> \
-  --cwd <cwd> \
+  --context-file <file>   # one per context file
+  --cwd . \
   --new-session \
   --session <child-session-path> \
   --max-tokens <max-tokens> \
@@ -363,6 +391,8 @@ The result summary stored in `SubTaskEntry.resultSummary` is the first 500 chara
 | `src/subagent.cpp` | Implementation of spawn, result collection |
 | `src/gpu_semaphore.hpp` | GpuSemaphore class (file-based lock) |
 | `src/gpu_semaphore.cpp` | Implementation of GPU semaphore |
+| `src/server_config.hpp` | ServerConfig struct and ServerConfigStore |
+| `src/server_config.cpp` | Server config loading from ~/.pi/servers.json |
 
 ### Files Modified
 
@@ -373,6 +403,7 @@ The result summary stored in `SubTaskEntry.resultSummary` is the first 500 chara
 | `src/agent_session.cpp` | Implemented decomposition logic, child spawn, result collection |
 | `src/config.hpp` | Added `gpu_lock_path` config field |
 | `src/config.cpp` | Added `--gpu-lock-path` CLI flag parsing |
+| `src/system_prompt.cpp` | Added Task Delegation section to system prompt |
 
 ### Implementation Steps
 
@@ -392,13 +423,13 @@ File-based GPU lock with PID liveness check. Stale lock cleanup on read. Polling
 
 Reads last assistant message from child session file by parsing JSONL lines. Returns first 500 characters as summary.
 
-#### Step 5: AgentSession Integration ✅ Implemented (partial)
+#### Step 5: AgentSession Integration ✅ Implemented
 
-`decomposeAndExecute()` detects multi-task requests via heuristic (`looks_like_multi_task()`), calls LLM to decompose, creates `SubTaskDecompositionEntry`, spawns children sequentially, collects results, injects as `CustomMessageEntry`. **Dependencies field is ignored** — subtasks always execute in array order.
+`decomposeAndExecute()` detects multi-task requests via heuristic (`looks_like_multi_task()`), calls LLM to decompose, creates `SubTaskDecompositionEntry`, spawns children sequentially, collects results, injects as `CustomMessageEntry`. Subtasks are executed in topological order.
 
 #### Step 6: System Prompt Update ✅ Implemented
 
-Decomposition instructions added to system prompt via `decomposeIntoSubtasks()` prompt construction.
+Decomposition instructions added to system prompt via `build_system_prompt()` in `system_prompt.cpp`.
 
 #### Step 7: Config and CLI Flags ✅ Implemented
 
@@ -414,11 +445,13 @@ Decomposition instructions added to system prompt via `decomposeIntoSubtasks()` 
 
 Child session files now follow the format: `subtask-<parent-session-id>-<subtask-id>_<timestamp>_<child-session-id>.jsonl`. This makes it easy to correlate child sessions with their parent and the specific subtask they executed.
 
-#### Step 10: Unit Tests ✅ Implemented
+#### Step 10: Server Config Store ✅ Implemented
 
-`coding-agent-subagent-dag-test` covers:
-- DAG validation: empty graph, single task, linear deps, diamond deps, self-dependency, missing dependency, cycles of 2 and 3
-- Topological sort: single task, linear order, diamond order, priority ordering, independent tasks, cycle rejection
+`ServerConfigStore` loads from `~/.pi/servers.json`, provides `findServer()`, `findServerByUrl()`, and `getPromptDescription()` for LLM routing hints.
+
+#### Step 11: Multi-Server Subtask Routing ✅ Implemented
+
+`executeSubtasks()` resolves `server` field from subtask JSON against `ServerConfigStore`. Falls back to parent server if not found.
 
 ## Issues and Architecture Concerns
 
@@ -493,6 +526,16 @@ The system prompt mentions `/decompose` as an explicit trigger, but it is not im
 
 There is no way to list active subtasks, view their status, or see results without parsing the session file.
 
+### 11. Decomposition JSON Format Mismatch ⚠️ Bug
+
+The system prompt instructs the LLM to respond with `{decomposition: {description, subtasks}}` but `decomposeIntoSubtasks()` parses `{description, subtasks}` (without the `decomposition` wrapper). This means the LLM output will fail to parse unless it ignores the prompt format.
+
+**Fix needed:** Either update the system prompt to match the code's expected format, or update the code to handle the nested `decomposition` wrapper.
+
+### 12. `--context-file` CLI Flag Missing ❌
+
+`SubAgent::spawn()` adds `--context-file` arguments to the child command line, but `config.cpp` does not parse this flag. The child process will fail with "Unknown argument: --context-file".
+
 ## Future Considerations (Not in Phase 11)
 
 - **Parallel sub-agents**: Allow multiple children when GPU resources permit (requires multi-GPU lock support)
@@ -519,6 +562,8 @@ There is no way to list active subtasks, view their status, or see results witho
 | GPU lock blocks across machines | File-based lock does not work cross-machine | ❌ Not addressed |
 | No visibility into child progress | Child output not streamed to parent | ❌ Not implemented |
 | Binary not in PATH | Hardcoded "coding-agent" string | ⚠️ Partial |
+| Decomposition JSON format mismatch | System prompt and code disagree on format | ⚠️ Bug |
+| `--context-file` not parsed | Child command line includes flag but config doesn't parse it | ❌ Bug |
 
 ## Testing Strategy
 
@@ -541,4 +586,4 @@ There is no way to list active subtasks, view their status, or see results witho
 - Verify child session files are created
 - Verify results appear in parent session
 - Verify GPU lock file is created/released
-- Test with two separate llama-cpp servers (different GPUs) — **currently broken**
+- Test with two separate llama-cpp servers (different GPUs)

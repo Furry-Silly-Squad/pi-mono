@@ -57,6 +57,8 @@ AgentSessionConfig make_session_config(const Config& c) {
     cfg.retry_base_delay_ms        = c.retry_base_delay_ms;
     cfg.retry_max_retry_delay_ms   = c.retry_max_retry_delay_ms;
     cfg.retry_timeout_ms           = c.retry_timeout_ms;
+    cfg.contextFiles               = c.context_files;
+    cfg.subagentBinaryPath         = "";  // Set later from argv[0]
     return cfg;
 }
 
@@ -159,7 +161,29 @@ int run_agent(int argc, char** argv) {
                                          std::make_optional(branch_details));
     }
 
-    AgentSession agent(make_session_config(config.value()), provider, tools, std::move(session_mgr));
+    AgentSessionConfig sessionCfg = make_session_config(config.value());
+
+    // Resolve the coding-agent binary path from argv[0] for reliable sub-agent spawning.
+    // This avoids relying on PATH lookup.
+    std::string binaryPath = "coding-agent";  // Fallback: PATH lookup
+    {
+        std::filesystem::path exePath;
+        char buf[4096];
+        ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (len > 0) {
+            buf[len] = '\0';
+            exePath = std::filesystem::path(buf);
+        } else {
+            exePath = std::filesystem::path(argv[0]);
+        }
+        // Use the directory of the current executable
+        if (exePath.has_parent_path() && !exePath.parent_path().string().empty()) {
+            binaryPath = (exePath.parent_path() / "coding-agent").string();
+        }
+    }
+    sessionCfg.subagentBinaryPath = binaryPath;
+
+    AgentSession agent(sessionCfg, provider, tools, std::move(session_mgr));
 
     if (should_run_print_mode(config.value())) {
         return run_print_mode(agent, config->prompt.value_or(""));

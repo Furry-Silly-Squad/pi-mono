@@ -120,6 +120,7 @@ void print_usage() {
       << "  --retry-base-delay-ms <ms> Base delay for exponential backoff in ms (default: 1000)\n"
       << "  --retry-max-delay-ms <ms>  Maximum backoff delay in ms (default: 60000)\n"
       << "  --gpu-lock-path <path>     GPU semaphore lock file path (default: <cwd>/.pi/gpu.lock)\n"
+      << "  --context-file <file>      Add a context file for the agent (repeatable)\n"
       << "  --prompt <text>           Prompt text to send\n"
       << "  --help                    Show this help\n"
       << "\n"
@@ -418,6 +419,10 @@ std::optional<Config> parse_config(int argc, char** argv, std::string& error) {
     }
     if (arg == "--gpu-lock-path" && i + 1 < argc) {
       config.gpu_lock_path = argv[++i];
+      continue;
+    }
+    if (arg == "--context-file" && i + 1 < argc) {
+      config.context_files.push_back(argv[++i]);
       continue;
     }
     if (arg == "--prompt" && i + 1 < argc) {

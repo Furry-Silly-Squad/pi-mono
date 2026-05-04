@@ -1518,18 +1518,33 @@ bool AgentSession::decomposeIntoSubtasks(const std::string& user_input,
             return false;
         }
 
-        if (!j.contains("subtasks") || !j["subtasks"].is_array()) {
+        // Handle both formats:
+        // 1. Nested: { "decomposition": { "description": ..., "subtasks": [...] } }
+        // 2. Flat:   { "description": ..., "subtasks": [...] }
+        nlohmann::json subtasksJson;
+        std::string description;
+
+        if (j.contains("decomposition") && j["decomposition"].is_object()) {
+            const auto& decomp = j["decomposition"];
+            if (!decomp.contains("subtasks") || !decomp["subtasks"].is_array()) {
+                error = "Decomposition response missing 'subtasks' array in 'decomposition'";
+                return false;
+            }
+            subtasksJson = decomp["subtasks"];
+            description = decomp.value("description", "Task decomposition");
+        } else if (j.contains("subtasks") && j["subtasks"].is_array()) {
+            subtasksJson = j["subtasks"];
+            description = j.value("description", "Task decomposition");
+        } else {
             error = "Decomposition response missing 'subtasks' array";
             return false;
         }
 
         // Store decomposition entry in session
-        nlohmann::json subtasks_json = j["subtasks"];
-        std::string description = j.value("description", "Task decomposition");
-        session_->appendSubTaskDecompositionEntry(description, subtasks_json);
+        session_->appendSubTaskDecompositionEntry(description, subtasksJson);
 
         // Extract subtasks with all fields
-        for (const auto& st : j["subtasks"]) {
+        for (const auto& st : subtasksJson) {
             SubTask task;
             task.id = st.value("id", std::to_string(subtasks.size() + 1));
             task.description = st.value("description", "");

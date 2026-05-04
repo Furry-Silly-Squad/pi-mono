@@ -239,6 +239,10 @@ struct AgentSessionConfig {
 
     /// Loaded server configurations for multi-server routing (optional).
     std::optional<ServerConfigStore> serverConfigs;
+    /// Extra context files to pass to child sub-agents.
+    std::vector<std::string> contextFiles;
+    /// Path to the coding-agent binary for sub-agent spawning (resolved from argv[0]).
+    std::string subagentBinaryPath;
 };
 
 // ============================================================================

@@ -61,6 +61,9 @@ struct AgentEvent {
         ModelCallStart,
         ToolCall,
         ToolResult,
+        ToolExecutionStart,
+        ToolExecutionUpdate,
+        ToolExecutionEnd,
         ModelChange,
         ThinkingLevelChange,
         CompactionStart,
@@ -77,14 +80,17 @@ struct AgentEvent {
     // For TurnStart/TurnEnd
     int turn_index = 0;
 
-    // For ToolCall
+    // For ToolCall / ToolExecutionStart
     std::string tool_name;
     std::string tool_call_id;
     std::string tool_args;
 
-    // For ToolResult
+    // For ToolResult / ToolExecutionEnd
     std::string tool_result;
     bool tool_error = false;
+
+    // For ToolExecutionUpdate
+    std::string partial_result;
 
     // For ModelChange
     std::string previous_model;

@@ -864,12 +864,37 @@ void AgentSession::execute_single_tool(const ToolCall& call,
     call_ev.tool_args    = call.arguments_json;
     emit_event(call_ev.type, call_ev);
 
+    // Tool execution lifecycle events
+    AgentEvent exec_start{};
+    exec_start.type         = AgentEvent::Type::ToolExecutionStart;
+    exec_start.tool_name    = call.name;
+    exec_start.tool_call_id = call.id;
+    exec_start.tool_args    = call.arguments_json;
+    emit_event(exec_start.type, exec_start);
+
     on_chunk("[tool: " + call.name + "] " + describe_tool_call(call.name, call.arguments_json) + "\n");
 
     ToolResult result = execute_single_tool_with_hooks(call);
 
+    // Emit update with partial/final result
+    AgentEvent exec_update{};
+    exec_update.type         = AgentEvent::Type::ToolExecutionUpdate;
+    exec_update.tool_name    = call.name;
+    exec_update.tool_call_id = call.id;
+    exec_update.partial_result = result.content;
+    emit_event(exec_update.type, exec_update);
+
     on_chunk("[tool: " + call.name + "] " +
              (result.ok ? "done" : "failed: " + result.content) + "\n");
+
+    // Emit end event
+    AgentEvent exec_end{};
+    exec_end.type         = AgentEvent::Type::ToolExecutionEnd;
+    exec_end.tool_name    = call.name;
+    exec_end.tool_call_id = call.id;
+    exec_end.tool_result  = result.content;
+    exec_end.tool_error   = !result.ok;
+    emit_event(exec_end.type, exec_end);
 
     emit_tool_result(call, result);
 }
@@ -925,6 +950,15 @@ bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
         call_ev.tool_call_id = item.call.id;
         call_ev.tool_args    = item.call.arguments_json;
         emit_event(call_ev.type, call_ev);
+
+        // Tool execution lifecycle events (emit in main thread before spawning workers)
+        AgentEvent exec_start{};
+        exec_start.type         = AgentEvent::Type::ToolExecutionStart;
+        exec_start.tool_name    = item.call.name;
+        exec_start.tool_call_id = item.call.id;
+        exec_start.tool_args    = item.call.arguments_json;
+        emit_event(exec_start.type, exec_start);
+
         on_chunk("[tool: " + item.call.name + "] " +
                  describe_tool_call(item.call.name, item.call.arguments_json) + "\n");
     }
@@ -984,8 +1018,26 @@ bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
     }
 
     for (const auto& item : work_items) {
+        // Emit update with partial/final result
+        AgentEvent exec_update{};
+        exec_update.type         = AgentEvent::Type::ToolExecutionUpdate;
+        exec_update.tool_name    = item.call.name;
+        exec_update.tool_call_id = item.call.id;
+        exec_update.partial_result = item.result.content;
+        emit_event(exec_update.type, exec_update);
+
         on_chunk("[tool: " + item.call.name + "] " +
                  (item.result.ok ? "done" : "failed: " + item.result.content) + "\n");
+
+        // Emit end event
+        AgentEvent exec_end{};
+        exec_end.type         = AgentEvent::Type::ToolExecutionEnd;
+        exec_end.tool_name    = item.call.name;
+        exec_end.tool_call_id = item.call.id;
+        exec_end.tool_result  = item.result.content;
+        exec_end.tool_error   = !item.result.ok;
+        emit_event(exec_end.type, exec_end);
+
         emit_tool_result(item.call, item.result);
     }
 

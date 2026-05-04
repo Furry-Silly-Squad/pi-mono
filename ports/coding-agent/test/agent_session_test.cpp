@@ -304,14 +304,19 @@ bool test_tool_flow() {
          "fifth message is final assistant text");
 
   // Event order:
-  //   TurnStart, ModelCallStart, ToolCall, ToolResult, ModelCallStart, TurnEnd
-  EXPECT(events.size() == 6, "expected 6 events for one tool round + final answer");
+  //   TurnStart, ModelCallStart, ToolCall, ToolExecutionStart,
+  //   ToolExecutionUpdate, ToolExecutionEnd, ToolResult,
+  //   ModelCallStart, TurnEnd
+  EXPECT(events.size() == 9, "expected 9 events for one tool round + final answer");
   EXPECT(events[0] == coding_agent::AgentEvent::Type::TurnStart, "TurnStart");
   EXPECT(events[1] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #1");
   EXPECT(events[2] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall");
-  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult");
-  EXPECT(events[4] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #2");
-  EXPECT(events[5] == coding_agent::AgentEvent::Type::TurnEnd, "TurnEnd");
+  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart");
+  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate");
+  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd");
+  EXPECT(events[6] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult");
+  EXPECT(events[7] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #2");
+  EXPECT(events[8] == coding_agent::AgentEvent::Type::TurnEnd, "TurnEnd");
   EXPECT(last_tool_name == "echo", "tool events name=echo");
 
   return true;
@@ -612,20 +617,36 @@ bool test_parallel_tool_execution() {
   // Verify all 3 tools ran: system + user + assistant(tool_calls) + 3 tool messages + assistant = 7
   EXPECT(agent.message_count() == 7, "expected 7 messages after parallel tool round");
 
-  // Event order for parallel:
-  //   TurnStart, ModelCallStart, ToolCall(echo), ToolCall(ls), ToolCall(noop),
-  //   ToolResult(echo), ToolResult(ls), ToolResult(noop), ModelCallStart, TurnEnd
-  EXPECT(events.size() == 10, "expected 10 events for parallel tool round");
+  // Event order for parallel (each tool emits ToolCall, ToolExecutionStart before workers,
+// then after workers join: ExecUpdate, ExecEnd, ToolResult per tool):
+  //   TurnStart, ModelCallStart,
+  //   ToolCall(echo), ExecStart(echo),
+  //   ToolCall(ls), ExecStart(ls),
+  //   ToolCall(noop), ExecStart(noop),
+  //   ExecUpdate(echo), ExecEnd(echo), ToolResult(echo),
+  //   ExecUpdate(ls), ExecEnd(ls), ToolResult(ls),
+  //   ExecUpdate(noop), ExecEnd(noop), ToolResult(noop),
+  //   ModelCallStart, TurnEnd
+  EXPECT(events.size() == 19, "expected 19 events for parallel tool round");
   EXPECT(events[0] == coding_agent::AgentEvent::Type::TurnStart, "TurnStart");
   EXPECT(events[1] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #1");
   EXPECT(events[2] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #1 (echo)");
-  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2 (ls)");
-  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #3 (noop)");
-  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
-  EXPECT(events[6] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2");
-  EXPECT(events[7] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #3");
-  EXPECT(events[8] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #2");
-  EXPECT(events[9] == coding_agent::AgentEvent::Type::TurnEnd, "TurnEnd");
+  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #1 (echo)");
+  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2 (ls)");
+  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #2 (ls)");
+  EXPECT(events[6] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #3 (noop)");
+  EXPECT(events[7] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #3 (noop)");
+  EXPECT(events[8] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #1 (echo)");
+  EXPECT(events[9] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #1 (echo)");
+  EXPECT(events[10] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1 (echo)");
+  EXPECT(events[11] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #2 (ls)");
+  EXPECT(events[12] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #2 (ls)");
+  EXPECT(events[13] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2 (ls)");
+  EXPECT(events[14] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #3 (noop)");
+  EXPECT(events[15] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #3 (noop)");
+  EXPECT(events[16] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #3 (noop)");
+  EXPECT(events[17] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #2");
+  EXPECT(events[18] == coding_agent::AgentEvent::Type::TurnEnd, "TurnEnd");
 
   return true;
 }
@@ -739,10 +760,23 @@ bool test_per_tool_parallel_all_parallel() {
 
   const bool ok = agent.run("test", [](const std::string&) {});
   EXPECT(ok, "parallel all-parallel tools must succeed");
-  EXPECT(events.size() == 8, "expected 8 events (parallel: 2 ToolCall + 2 ToolResult + 4 others)");
+  // 2 parallel tools: pre-workers emit ToolCall+ExecStart per tool, post-workers emit ExecUpdate+ExecEnd+ToolResult per tool
+  // Plus 4 structural events: TurnStart, ModelCallStart, ModelCallStart, TurnEnd
+  EXPECT(events.size() == 14, "expected 14 events (parallel: 2 tools + 4 structural)");
+  EXPECT(events[0] == coding_agent::AgentEvent::Type::TurnStart, "TurnStart");
+  EXPECT(events[1] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #1");
   EXPECT(events[2] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #1");
-  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2");
-  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
+  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #1");
+  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2");
+  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #2");
+  EXPECT(events[6] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #1");
+  EXPECT(events[7] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #1");
+  EXPECT(events[8] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
+  EXPECT(events[9] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #2");
+  EXPECT(events[10] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #2");
+  EXPECT(events[11] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2");
+  EXPECT(events[12] == coding_agent::AgentEvent::Type::ModelCallStart, "ModelCallStart #2");
+  EXPECT(events[13] == coding_agent::AgentEvent::Type::TurnEnd, "TurnEnd");
 
   return true;
 }
@@ -810,14 +844,25 @@ bool test_per_tool_parallel_with_sequential_tool() {
 
   const bool ok = agent.run("test", [](const std::string&) {});
   EXPECT(ok, "parallel with sequential tool must succeed");
-  EXPECT(events.size() == 10, "expected 10 events (sequential: 3 ToolCall + 3 ToolResult interleaved + 4 others)");
-  // Sequential: ToolCall, ToolResult, ToolCall, ToolResult, ...
+  // 3 sequential tools, each emits: ToolCall, ExecStart, ExecUpdate, ExecEnd, ToolResult
+  // Plus 4 structural events: TurnStart, ModelCallStart, ModelCallStart, TurnEnd
+  EXPECT(events.size() == 19, "expected 19 events (sequential: 3 tools * 5 exec events + 4 others)");
+  // Sequential: each tool emits ToolCall, ExecStart, ExecUpdate, ExecEnd, ToolResult
   EXPECT(events[2] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #1");
-  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
-  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2");
-  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2");
-  EXPECT(events[6] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #3");
-  EXPECT(events[7] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #3");
+  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #1");
+  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #1");
+  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #1");
+  EXPECT(events[6] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
+  EXPECT(events[7] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2");
+  EXPECT(events[8] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #2");
+  EXPECT(events[9] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #2");
+  EXPECT(events[10] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #2");
+  EXPECT(events[11] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2");
+  EXPECT(events[12] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #3");
+  EXPECT(events[13] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #3");
+  EXPECT(events[14] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #3");
+  EXPECT(events[15] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #3");
+  EXPECT(events[16] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #3");
 
   return true;
 }
@@ -864,12 +909,19 @@ bool test_per_tool_global_sequential() {
 
   const bool ok = agent.run("test", [](const std::string&) {});
   EXPECT(ok, "global sequential must succeed");
-  // Sequential: ToolCall, ToolResult, ToolCall, ToolResult
-  EXPECT(events.size() == 8, "expected 8 events (sequential + 4 others)");
+  // 2 sequential tools, each emits: ToolCall, ExecStart, ExecUpdate, ExecEnd, ToolResult
+  // Plus 4 structural events: TurnStart, ModelCallStart, ModelCallStart, TurnEnd
+  EXPECT(events.size() == 14, "expected 14 events (sequential: 2 tools * 5 exec events + 4 others)");
   EXPECT(events[2] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #1");
-  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
-  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2");
-  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2");
+  EXPECT(events[3] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #1");
+  EXPECT(events[4] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #1");
+  EXPECT(events[5] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #1");
+  EXPECT(events[6] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #1");
+  EXPECT(events[7] == coding_agent::AgentEvent::Type::ToolCall, "ToolCall #2");
+  EXPECT(events[8] == coding_agent::AgentEvent::Type::ToolExecutionStart, "ToolExecutionStart #2");
+  EXPECT(events[9] == coding_agent::AgentEvent::Type::ToolExecutionUpdate, "ToolExecutionUpdate #2");
+  EXPECT(events[10] == coding_agent::AgentEvent::Type::ToolExecutionEnd, "ToolExecutionEnd #2");
+  EXPECT(events[11] == coding_agent::AgentEvent::Type::ToolResult, "ToolResult #2");
 
   return true;
 }
@@ -965,7 +1017,9 @@ bool test_hooks_before_tool_call_block() {
   EXPECT(agent.messages()[3].role == "tool", "tool message present");
   EXPECT(agent.messages()[3].content.find("Blocked by beforeToolCall hook") != std::string::npos,
          "tool result contains block reason");
-  EXPECT(events.size() == 6, "expected 6 events (TurnStart, ModelCallStart, ToolCall, ToolResult, ModelCallStart, TurnEnd)");
+  // Even blocked tool emits: ExecStart, ToolCall, ExecEnd, ExecUpdate, ToolResult (5 events)
+  // Plus structural: TurnStart, ModelCallStart, ModelCallStart, TurnEnd (4 events)
+  EXPECT(events.size() == 9, "expected 9 events (TurnStart, ModelCallStart, ExecStart, ToolCall, ExecEnd, ExecUpdate, ToolResult, ModelCallStart, TurnEnd)");
 
   return true;
 }

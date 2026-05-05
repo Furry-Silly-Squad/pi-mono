@@ -288,39 +288,92 @@ std::string sessionIdPrefix() {
 namespace {
 
 void migrateV1ToV2(std::vector<FileEntry>& entries) {
-  std::unordered_set<std::string> ids;
-  std::string prevId;
+  // Build a map from old IDs to new IDs for parentId resolution.
+  // Preserve existing IDs from v1 entries; only generate new ones for entries without.
+  std::unordered_map<std::string, std::string> oldToNewId;
+  std::unordered_set<std::string> usedIds;
 
+  // First pass: collect existing IDs and assign new IDs
+  for (const auto& raw : entries) {
+    if (std::holds_alternative<SessionHeader>(raw)) {
+      const auto& header = std::get<SessionHeader>(raw);
+      oldToNewId[header.id] = header.id;
+      usedIds.insert(header.id);
+      continue;
+    }
+
+    const auto& entry = std::get<SessionEntry>(raw);
+    const std::string* oldId = std::visit(
+        [](const auto& e) -> const std::string* { return &e.id; }, entry);
+
+    if (oldId && !oldId->empty()) {
+      oldToNewId[*oldId] = *oldId;
+      usedIds.insert(*oldId);
+    } else {
+      std::string newId = generateId(usedIds);
+      oldToNewId[*oldId] = newId;
+      usedIds.insert(newId);
+    }
+  }
+
+  // Second pass: assign IDs and resolve parentId references
+  std::string prevNewId;
   for (auto& raw : entries) {
     if (std::holds_alternative<SessionHeader>(raw)) {
       auto& header = std::get<SessionHeader>(raw);
       header.version = 2;
-      ids.insert(header.id);
-      prevId = header.id;
+      prevNewId = header.id;
       continue;
     }
 
     auto& entry = std::get<SessionEntry>(raw);
-    std::string id = generateId(ids);
     entry = std::visit(
-        [&id, &prevId](auto& e) -> SessionEntry {
+        [&prevNewId, &oldToNewId](auto& e) -> SessionEntry {
           using T = std::decay_t<decltype(e)>;
           if constexpr (std::is_same_v<T, SessionMessageEntry>) {
-            e.id = id;
-            e.parentId = prevId;
+            // Preserve existing ID from v1; only use oldToNewId to resolve parentId
+            if (e.id.empty()) {
+              e.id = generateFreshId();
+            }
+            // Resolve parentId: if it's an old ID, map to new ID;
+            // if empty, use prevNewId as fallback
+            if (!e.parentId.empty()) {
+              auto it = oldToNewId.find(e.parentId);
+              if (it != oldToNewId.end()) {
+                e.parentId = it->second;
+              }
+            } else {
+              e.parentId = prevNewId;
+            }
           } else if constexpr (std::is_same_v<T, CompactionEntry>) {
-            e.id = id;
-            e.parentId = prevId;
-            // Convert firstKeptEntryIndex (v1) to firstKeptEntryId (v2)
-            // This is a best-effort heuristic since v1 had index-based tracking
+            if (e.id.empty()) {
+              e.id = generateFreshId();
+            }
+            if (!e.parentId.empty()) {
+              auto it = oldToNewId.find(e.parentId);
+              if (it != oldToNewId.end()) {
+                e.parentId = it->second;
+              }
+            } else {
+              e.parentId = prevNewId;
+            }
           } else {
-            e.id = id;
-            e.parentId = prevId;
+            if (e.id.empty()) {
+              e.id = generateFreshId();
+            }
+            if (!e.parentId.empty()) {
+              auto it = oldToNewId.find(e.parentId);
+              if (it != oldToNewId.end()) {
+                e.parentId = it->second;
+              }
+            } else {
+              e.parentId = prevNewId;
+            }
           }
+          prevNewId = e.id;
           return e;
         },
         entry);
-    prevId = id;
   }
 }
 
@@ -1494,23 +1547,44 @@ void SessionManager::_buildIndex() {
 void SessionManager::_persist(const SessionEntry& entry) {
   if (!persist_ || !sessionFile_.has_value()) return;
 
-  // Check if we have any assistant message yet
-  bool hasAssistant = false;
-  for (const auto& raw : fileEntries_) {
-    if (std::holds_alternative<SessionHeader>(raw)) continue;
-    const auto& sent = std::get<SessionEntry>(raw);
-    if (auto* msg = std::get_if<SessionMessageEntry>(&sent)) {
-      if (msg->message.role == "assistant") {
-        hasAssistant = true;
-        break;
+  // Always persist metadata entries immediately (compaction, branch_summary,
+  // model_change, thinking_level_change, custom entries, labels, etc.).
+  // Only defer user/assistant messages to avoid writing empty sessions.
+  if (auto* comp = std::get_if<CompactionEntry>(&entry)) {
+    (void)comp;
+  } else if (auto* bs = std::get_if<BranchSummaryEntry>(&entry)) {
+    (void)bs;
+  } else if (auto* mc = std::get_if<ModelChangeEntry>(&entry)) {
+    (void)mc;
+  } else if (auto* tle = std::get_if<ThinkingLevelChangeEntry>(&entry)) {
+    (void)tle;
+  } else if (auto* ce = std::get_if<CustomEntry>(&entry)) {
+    (void)ce;
+  } else if (auto* le = std::get_if<LabelEntry>(&entry)) {
+    (void)le;
+  } else if (auto* sie = std::get_if<SessionInfoEntry>(&entry)) {
+    (void)sie;
+  } else if (auto* cme = std::get_if<CustomMessageEntry>(&entry)) {
+    (void)cme;
+  } else {
+    // Check if we have any assistant message yet
+    bool hasAssistant = false;
+    for (const auto& raw : fileEntries_) {
+      if (std::holds_alternative<SessionHeader>(raw)) continue;
+      const auto& sent = std::get<SessionEntry>(raw);
+      if (auto* msg = std::get_if<SessionMessageEntry>(&sent)) {
+        if (msg->message.role == "assistant") {
+          hasAssistant = true;
+          break;
+        }
       }
     }
-  }
 
-  if (!hasAssistant) {
-    // Deferred write — will flush when assistant arrives
-    flushed_ = false;
-    return;
+    if (!hasAssistant) {
+      // Deferred write — will flush when assistant arrives
+      flushed_ = false;
+      return;
+    }
   }
 
   if (!flushed_) {

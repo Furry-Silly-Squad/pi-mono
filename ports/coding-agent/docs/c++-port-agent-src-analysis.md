@@ -12,6 +12,7 @@ Primary TypeScript reference for the agent loop: **`packages/coding-agent/src/co
 | **Provider** | Multi-provider (`pi-ai` package) | Single provider (`llama-cpp`) |
 | **Session store** | JSONL with `SessionManager` | JSONL with `SessionManager` |
 | **Extension system** | Full plugin system | None |
+| **Event granularity** | `tool_execution_start`/`update`/`end`, `turn_start`/`end`, `message_start`/`update`/`end` | `ToolExecutionStart`/`Update`/`End`, `ToolCall`/`ToolResult`, `TurnStart`/`TurnEnd`, `ModelCallStart` |
 
 ## TypeScript (`packages/coding-agent/src/core`)
 
@@ -50,7 +51,7 @@ Primary TypeScript reference for the agent loop: **`packages/coding-agent/src/co
 | Tool hooks (`beforeToolCall`/`afterToolCall`) | Yes (via `agent.beforeToolCall`/`afterToolCall`) | Yes (`before_tool_call`/`after_tool_call` in config) |
 | `transformContext` | Yes | Yes (`transform_context` in config) |
 | Dynamic API key (`getApiKey`) | Yes (via `ModelRegistry`) | Yes (`get_api_key` in config) |
-| Event granularity | `tool_execution_start`/`update`/`end`, `turn_start`/`end`, `message_start`/`update`/`end` | `ToolCall`/`ToolResult`, `TurnStart`/`TurnEnd`, `ModelCallStart` |
+| Event granularity | `tool_execution_start`/`update`/`end`, `turn_start`/`end`, `message_start`/`update`/`end` | `ToolExecutionStart`/`Update`/`End`, `ToolCall`/`ToolResult`, `TurnStart`/`TurnEnd`, `ModelCallStart` |
 | Compaction (manual + auto) | Yes | Yes |
 | Context overflow recovery | Yes (compact + auto-retry) | Yes (compact + retry) |
 | Auto-retry (exponential backoff) | Yes | Yes |
@@ -73,7 +74,7 @@ Primary TypeScript reference for the agent loop: **`packages/coding-agent/src/co
 | Image content support | Yes (`ImageContent` in messages) | No |
 | Bash execution abstraction | Yes (`BashOperations` for remote/local) | Inline (no abstraction) |
 | Bash streaming output | Yes (`onChunk` callback) | Yes (via `on_chunk` in tool execution) |
-| Bash abort/cancel | Yes | Yes (fork/exec with poll-based cancellation, SIGKILL process group) |
+| Bash abort/cancel | Yes | Yes (fork/exec + poll loop with SIGKILL process group, atomic cancel flag) |
 | Bash command prefix / shell path | Yes (via settings) | No |
 | Settings manager | Yes (persistent across sessions) | Partial (CLI args + `settings.json` for some options) |
 | Auth storage / OAuth | Yes (`auth.json`) | No (static `api_key` in config) |
@@ -100,10 +101,8 @@ Primary TypeScript reference for the agent loop: **`packages/coding-agent/src/co
 
 ### High priority
 
-- **`tool_execution_start`/`update`/`end` events** — C++ emits `ToolCall` and `ToolResult` but not the granular lifecycle events that the TUI uses for tool execution progress display. The TS `AgentEvent` type includes these; C++ `AgentEvent::Type` does not.
 - **Image content** — TS messages support `ImageContent` alongside text; C++ `ChatMessage` content is plain string. The llama.cpp provider doesn't need to change (single provider), but `ChatMessage` and the session store would need to support multi-part content.
 - **Bash execution abstraction** — TS `BashOperations` interface enables remote execution (e.g., via SSH). C++ bash execution is inline in the tool. Adding an abstract `BashOperations` interface would align the design.
-- **Bash abort/cancel** — TS `AgentSession` has `_bashAbortController` for cancelling running bash commands. C++ has no bash cancellation mechanism.
 - **Bash command prefix / shell path** — TS reads `shellCommandPrefix` and `shellPath` from settings. C++ bash tool has no such configuration.
 - **Session import from JSONL** — TS `importFromJsonl()` supports importing external session files. C++ can only create new/continue recent sessions.
 - **Session lifecycle management** — TS `AgentSessionRuntime` manages full session lifecycle (switch, new, fork, import) with teardown/rebind semantics. C++ has `/new` and `/branch` but no runtime-level session replacement.
@@ -131,16 +130,14 @@ Primary TypeScript reference for the agent loop: **`packages/coding-agent/src/co
 
 ## Suggested implementation order
 
-1. **`tool_execution_start`/`update`/`end` events** — Add to `AgentEvent::Type` and emit during tool execution. Aligns with TS event taxonomy.
-2. **Bash abort/cancel** — Add `std::atomic<bool>` or `std::stop_token` to bash tool, support Ctrl-C during execution.
+1. **Image content** — Extend `ChatMessage` to support multi-part content (text + images).
+2. **Bash execution abstraction** — Extract `BashOperations` interface, make bash tool use it.
 3. **Bash command prefix / shell path** — Add to `AgentSessionConfig`, pass to bash tool.
-4. **Bash execution abstraction** — Extract `BashOperations` interface, make bash tool use it.
-5. **Image content** — Extend `ChatMessage` to support multi-part content (text + images).
-6. **Session import** — Add `/import` command to load external JSONL files.
-7. **Session lifecycle** — Add `/switch`, `/fork` commands with full session replacement semantics.
-8. **Settings manager** — Structured settings persistence for model, thinking level, shell config.
-9. **Session stats (full)** — Add token breakdown, cost, tool call counts to `/stats`.
-10. **Model registry** — Dynamic model discovery (only relevant if multi-provider support is added later).
+4. **Session import** — Add `/import` command to load external JSONL files.
+5. **Session lifecycle** — Add `/switch`, `/fork` commands with full session replacement semantics.
+6. **Settings manager** — Structured settings persistence for model, thinking level, shell config.
+7. **Session stats (full)** — Add token breakdown, cost, tool call counts to `/stats`.
+8. **Model registry** — Dynamic model discovery (only relevant if multi-provider support is added later).
 
 ## Files (reference)
 

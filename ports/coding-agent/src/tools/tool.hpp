@@ -12,6 +12,7 @@ enum class ToolExecutionMode : uint8_t {
 struct ToolResult {
   bool ok;
   std::string content;
+  bool cancelled = false;
 };
 
 class Tool {

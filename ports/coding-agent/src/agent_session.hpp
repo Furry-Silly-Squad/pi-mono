@@ -442,8 +442,19 @@ class AgentSession {
     /// Wait for any in-progress retry to complete.
     void waitForRetry();
 
-    /// Check if an error message is retryable (for testing).
+     /// Check if an error message is retryable (for testing).
     bool is_retryable_error(const std::string& error_text) const;
+
+    // ====================================================================
+    // Bash Cancellation
+    // ====================================================================
+
+    /// Set the atomic flag that BashTool checks during execution.
+    /// Called before each tool execution round; cleared after.
+    void set_bash_cancel_flag(std::atomic<bool>* flag);
+
+    /// Clear the bash cancel flag reference.
+    void clear_bash_cancel_flag();
 
     /// Access pending next-turn messages (for testing).
     const std::vector<std::string>& pending_next_turn_messages() const {
@@ -576,6 +587,13 @@ class AgentSession {
     std::mutex retry_mutex_;
     std::optional<std::chrono::steady_clock::time_point> retry_deadline_;
     std::function<bool(const std::string&)> destructive_bash_confirm_;
+
+    // ====================================================================
+    // Bash Cancellation
+    // ====================================================================
+
+    /// Atomic flag that BashTool checks during execution.
+    std::atomic<bool> bash_cancel_flag_{false};
 
     // ====================================================================
     // Event Helpers

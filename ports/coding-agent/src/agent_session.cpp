@@ -193,6 +193,7 @@ bool AgentSession::run(const std::string& user_input,
 void AgentSession::abort() {
     abort_requested_.store(true);
     provider_.cancel();
+    bash_cancel_flag_.store(true, std::memory_order_release);
 }
 
 bool AgentSession::is_running() const { return running_.load(); }
@@ -903,6 +904,13 @@ bool AgentSession::execute_tools(const std::vector<ToolCall>& tool_calls,
                                  const ChunkCallback& on_chunk) {
     if (tool_calls.empty()) return true;
 
+    // Set the bash cancel flag before tool execution so BashTool can check it.
+    set_bash_cancel_flag(&bash_cancel_flag_);
+    struct Guard {
+        AgentSession& session;
+        ~Guard() { session.clear_bash_cancel_flag(); }
+    } guard{*this};
+
     const bool global_parallel = config_.tool_execution_mode == "parallel";
 
     // Check if any tool in the batch is marked sequential.
@@ -1467,6 +1475,18 @@ void AgentSession::emit_abort_event() {
     AgentEvent ev{};
     ev.type = AgentEvent::Type::Abort;
     emit_event(ev.type, ev);
+}
+
+// ============================================================================
+// Bash Cancellation
+// ============================================================================
+
+void AgentSession::set_bash_cancel_flag(std::atomic<bool>* flag) {
+    tools_.set_bash_cancel_flag(flag);
+}
+
+void AgentSession::clear_bash_cancel_flag() {
+    tools_.set_bash_cancel_flag(nullptr);
 }
 
 }  // namespace coding_agent

@@ -44,6 +44,14 @@ ToolResult ToolRegistry::dispatch(const std::string& name, const std::string& ar
   };
 }
 
+void ToolRegistry::set_bash_cancel_flag(std::atomic<bool>* flag) {
+  for (auto& tool : tools_) {
+    if (auto* bash = dynamic_cast<BashTool*>(tool.get())) {
+      bash->set_cancel_flag(flag);
+    }
+  }
+}
+
 void register_builtin_tools(ToolRegistry& registry) {
   registry.register_tool(std::make_unique<ReadTool>());
   registry.register_tool(std::make_unique<WriteTool>());

@@ -73,7 +73,7 @@ Primary TypeScript reference for the agent loop: **`packages/coding-agent/src/co
 | Image content support | Yes (`ImageContent` in messages) | No |
 | Bash execution abstraction | Yes (`BashOperations` for remote/local) | Inline (no abstraction) |
 | Bash streaming output | Yes (`onChunk` callback) | Yes (via `on_chunk` in tool execution) |
-| Bash abort/cancel | Yes | No |
+| Bash abort/cancel | Yes | Yes (fork/exec with poll-based cancellation, SIGKILL process group) |
 | Bash command prefix / shell path | Yes (via settings) | No |
 | Settings manager | Yes (persistent across sessions) | Partial (CLI args + `settings.json` for some options) |
 | Auth storage / OAuth | Yes (`auth.json`) | No (static `api_key` in config) |

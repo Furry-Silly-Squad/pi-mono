@@ -15,6 +15,9 @@ class ToolRegistry {
   std::vector<ToolDefinition> build_tool_definitions() const;
   ToolResult dispatch(const std::string& name, const std::string& args_json, const std::string& cwd) const;
 
+  /// Set the atomic flag that BashTool checks during execution.
+  void set_bash_cancel_flag(std::atomic<bool>* flag);
+
  private:
   std::vector<std::unique_ptr<Tool>> tools_;
 };

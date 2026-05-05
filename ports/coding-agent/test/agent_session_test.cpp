@@ -1226,6 +1226,84 @@ bool test_transform_context_trim() {
 }
 
 // ===========================================================================
+// Test 17: Bash tool cancellation via abort()
+// ===========================================================================
+
+bool test_bash_cancellation() {
+  const fs::path session_dir = make_temp_dir("bash_cancel");
+
+  ScriptedProvider provider;
+  // First response: assistant requests a long-running bash command.
+  coding_agent::ChatResponse with_bash;
+  with_bash.tool_calls.push_back(coding_agent::ToolCall{
+      .id = "call_1",
+      .name = "bash",
+      .arguments_json = R"({"command":"sleep 100"})"
+  });
+  with_bash.completion_tokens = 5;
+  provider.enqueue(with_bash);
+
+  // Second response: assistant answers without tools.
+  coding_agent::ChatResponse done;
+  done.content = "ok done";
+  done.completion_tokens = 3;
+  provider.enqueue(done);
+
+  coding_agent::ToolRegistry tools;
+  register_builtin_tools(tools);
+  auto session_mgr = coding_agent::SessionManager::create(session_dir.string(), session_dir.string());
+
+  auto cfg = base_config(session_dir.string());
+  cfg.initial_active_tools = "bash";
+
+  coding_agent::AgentSession agent(cfg, provider, tools, std::move(session_mgr));
+
+  std::vector<coding_agent::AgentEvent::Type> events;
+  agent.set_event_handler([&events](const coding_agent::AgentEvent& ev) {
+    events.push_back(ev.type);
+  });
+
+  // Run in a thread so we can abort from the main thread.
+  std::thread runner([&]() {
+    agent.run("cancel me", [](const std::string&) {});
+  });
+
+  // Wait for the bash command to start executing.
+  // The bash tool runs synchronously, so we wait until the tool call event appears.
+  while (true) {
+    const auto& msgs = agent.messages();
+    if (msgs.size() >= 3) break;  // system + user + assistant(tool_call)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  // Now abort from another thread — this should kill the running bash process.
+  agent.abort();
+
+  // Wait a bit for the bash tool to detect the cancel flag and return.
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  // Wait for the runner to finish.
+  runner.join();
+
+  // The bash command should have been cancelled and the turn should have stopped.
+  // Verify that the tool result contains "cancelled".
+  bool found_cancelled = false;
+  for (const auto& msg : agent.messages()) {
+    if (msg.role == "tool" && msg.content.find("cancelled") != std::string::npos) {
+      found_cancelled = true;
+      break;
+    }
+  }
+  EXPECT(found_cancelled, "bash result should indicate cancellation");
+
+  // The abort() should have stopped the turn between tool iterations.
+  // We should NOT have reached the second provider call.
+  EXPECT(provider.call_count() == 1, "only first provider call should have completed");
+
+  return true;
+}
+
+// ===========================================================================
 // Driver
 // ===========================================================================
 
@@ -1255,6 +1333,7 @@ int main() {
       {"hooks_both_before_and_after", test_hooks_both_before_and_after},
       {"transform_context", test_transform_context},
       {"transform_context_trim", test_transform_context_trim},
+      {"bash_cancellation", test_bash_cancellation},
   };
 
   int passed = 0;

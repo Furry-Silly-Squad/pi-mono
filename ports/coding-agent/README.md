@@ -2,7 +2,7 @@
 
 A standalone C++ CLI port of the TypeScript `packages/coding-agent`. Implements a tool-calling agent loop with session management, context compaction, and interactive TUI.
 
-## Scope (Phases 1–9 Complete)
+## Scope
 
 | Area | Status |
 |------|--------|
@@ -230,7 +230,7 @@ See `docs/` for implementation details:
 - [docs/index.md](docs/index.md) — Documentation index
 - [docs/c++-port-agent-src-analysis.md](docs/c++-port-agent-src-analysis.md) — TS vs C++ parity analysis
 - [docs/issues.md](docs/issues.md) — Known issues and fix directions
-- [docs/phases/](docs/phases/) — Phase implementation plans (1–10)
+- [docs/phases/](docs/phases/) — Phase implementation plans (1–16)
 
 ## Troubleshooting
 

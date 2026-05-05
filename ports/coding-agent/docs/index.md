@@ -28,3 +28,9 @@ Implementation phases for the C++ port, in order:
 - [Phase 8: SessionManager Tree Model](phases/PHASE-8.md) — Full tree model, 10 entry types, branching, labels, migration
 - [Phase 9: Queue Management + Retry](phases/PHASE-9.md) — `steer()`/`followUp()` queues, auto-retry with exponential backoff
 - [Phase 10: Self-Rebuild & Restart](phases/PHASE-10.md) — `/rebuild` command for in-place binary replacement
+- [Phase 11: Image Content Support](phases/PHASE-11.md) — Multi-part chat messages, image content in session store
+- [Phase 12: RPC Mode](phases/PHASE-12.md) — JSONL-based headless/remote protocol
+- [Phase 13: Bash Execution Abstraction + Shell Path / Command Prefix](phases/PHASE-13.md) — `BashOperations` interface, custom shell path, command prefix
+- [Phase 14: Session Import from JSONL + Session Lifecycle Management](phases/PHASE-14.md) — `/import`, `/switch`, `/fork` commands, `SessionRuntime` class
+- [Phase 15: Settings Manager](phases/PHASE-15.md) — Persistent structured settings, storage interface, migrations
+- [Phase 16: Empty Completion Nudges](phases/PHASE-16.md) — Empty assistant message nudge logic, parity analysis
